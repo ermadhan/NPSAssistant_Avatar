@@ -88,6 +88,18 @@ export interface FundNav {
   fetched_at?: string;
 }
 
+export interface PortfolioNotes {
+  content: string;
+  updated_at: string | null;
+}
+
+export interface XirrTrendPoint {
+  period: string;
+  as_of_date: string;
+  calculated_xirr: number | null;
+  statement_xirr: number | null;
+}
+
 export interface AppStatePayload {
   years: YearListRow[];
   currentHoldings: EnrichedHoldingRow[];
@@ -100,6 +112,7 @@ export interface AppStatePayload {
   };
   disclosures: unknown[];
   catalog: FundNav[];
+  notes: PortfolioNotes;
 }
 
 export interface AllocationBucketAmount {

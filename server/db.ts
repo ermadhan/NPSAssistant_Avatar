@@ -1,4 +1,7 @@
-import type { ParseResult, PortfolioDisclosure } from "./models.ts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { FundNav, ParseResult, PortfolioDisclosure } from "./models.ts";
 
 export interface ImportRecord {
   id: number;
@@ -166,6 +169,96 @@ class InMemoryPortfolioDb {
   public navQuotes = new Map<string, NavQuoteRecord>();
   public securityDisclosures: DisclosureRecord[] = [];
   public securityPositions: StoredSecurityPosition[] = [];
+  public notes: { content: string; updated_at: string | null } = {
+    content: "",
+    updated_at: null,
+  };
+  public readonly dataFilePath: string;
+
+  constructor(dataFilePath: string = resolveDataFilePath()) {
+    this.dataFilePath = dataFilePath;
+    this.loadFromDisk();
+  }
+
+  private loadFromDisk(): void {
+    try {
+      if (!fs.existsSync(this.dataFilePath)) return;
+      const raw = fs.readFileSync(this.dataFilePath, "utf-8");
+      if (!raw.trim()) return;
+      const parsed = JSON.parse(raw) as Partial<{
+        nextImportId: number;
+        nextHoldingId: number;
+        nextContributionId: number;
+        nextTxnId: number;
+        nextDisclosureId: number;
+        nextSecurityPositionId: number;
+        imports: ImportRecord[];
+        snapshots: Array<[number, SnapshotRecord]>;
+        holdings: StoredHoldingRow[];
+        contributions: StoredContributionRow[];
+        schemeTransactions: StoredTransactionRow[];
+        formatProfiles: Array<[string, { mapping_json: string; created_at: string }]>;
+        narrationAliases: Array<[string, string]>;
+        schemeLinks: Array<[string, string]>;
+        navQuotes: Array<[string, NavQuoteRecord]>;
+        securityDisclosures: DisclosureRecord[];
+        securityPositions: StoredSecurityPosition[];
+        notes: { content: string; updated_at: string | null };
+      }>;
+      this.nextImportId = parsed.nextImportId ?? 1;
+      this.nextHoldingId = parsed.nextHoldingId ?? 1;
+      this.nextContributionId = parsed.nextContributionId ?? 1;
+      this.nextTxnId = parsed.nextTxnId ?? 1;
+      this.nextDisclosureId = parsed.nextDisclosureId ?? 1;
+      this.nextSecurityPositionId = parsed.nextSecurityPositionId ?? 1;
+      this.imports = parsed.imports ?? [];
+      this.snapshots = new Map(parsed.snapshots ?? []);
+      this.holdings = parsed.holdings ?? [];
+      this.contributions = parsed.contributions ?? [];
+      this.schemeTransactions = parsed.schemeTransactions ?? [];
+      this.formatProfiles = new Map(parsed.formatProfiles ?? []);
+      this.narrationAliases = new Map(parsed.narrationAliases ?? []);
+      this.schemeLinks = new Map(parsed.schemeLinks ?? []);
+      this.navQuotes = new Map(parsed.navQuotes ?? []);
+      this.securityDisclosures = parsed.securityDisclosures ?? [];
+      this.securityPositions = parsed.securityPositions ?? [];
+      this.notes = parsed.notes ?? { content: "", updated_at: null };
+    } catch (err) {
+      console.warn("Could not load local portfolio data:", err);
+    }
+  }
+
+  private persist(): void {
+    try {
+      const dir = path.dirname(this.dataFilePath);
+      fs.mkdirSync(dir, { recursive: true });
+      const payload = {
+        nextImportId: this.nextImportId,
+        nextHoldingId: this.nextHoldingId,
+        nextContributionId: this.nextContributionId,
+        nextTxnId: this.nextTxnId,
+        nextDisclosureId: this.nextDisclosureId,
+        nextSecurityPositionId: this.nextSecurityPositionId,
+        imports: this.imports,
+        snapshots: Array.from(this.snapshots.entries()),
+        holdings: this.holdings,
+        contributions: this.contributions,
+        schemeTransactions: this.schemeTransactions,
+        formatProfiles: Array.from(this.formatProfiles.entries()),
+        narrationAliases: Array.from(this.narrationAliases.entries()),
+        schemeLinks: Array.from(this.schemeLinks.entries()),
+        navQuotes: Array.from(this.navQuotes.entries()),
+        securityDisclosures: this.securityDisclosures,
+        securityPositions: this.securityPositions,
+        notes: this.notes,
+      };
+      const tmpPath = `${this.dataFilePath}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(payload), "utf-8");
+      fs.renameSync(tmpPath, this.dataFilePath);
+    } catch (err) {
+      console.warn("Could not save local portfolio data:", err);
+    }
+  }
 
   fileHashExists(fileHash: string): boolean {
     return this.imports.some((imp) => imp.file_hash === fileHash);
@@ -177,6 +270,7 @@ class InMemoryPortfolioDb {
 
   saveNarrationAlias(phrase: string, kind: string): void {
     this.narrationAliases.set(phrase, kind);
+    this.persist();
   }
 
   profileMapping(fingerprint: string): string | null {
@@ -188,6 +282,7 @@ class InMemoryPortfolioDb {
       mapping_json: mappingJson,
       created_at: isoSecondsNow(),
     });
+    this.persist();
   }
 
   saveImport(result: ParseResult, fileName: string, fileHash: string): number {
@@ -282,6 +377,7 @@ class InMemoryPortfolioDb {
       });
     }
 
+    this.persist();
     return importId;
   }
 
@@ -440,6 +536,7 @@ class InMemoryPortfolioDb {
         h.scheme_code = schemeCode;
       }
     }
+    this.persist();
   }
 
   applySavedLinks(): void {
@@ -449,6 +546,7 @@ class InMemoryPortfolioDb {
         h.scheme_code = code;
       }
     }
+    this.persist();
   }
 
   saveNavQuote(
@@ -465,6 +563,20 @@ class InMemoryPortfolioDb {
       nav_date: navDate,
       fetched_at: fetchedAt,
     });
+    this.persist();
+  }
+
+  saveNavQuotes(funds: FundNav[], fetchedAt: string = isoSecondsNow()): void {
+    for (const fund of funds) {
+      this.navQuotes.set(fund.scheme_code, {
+        scheme_code: fund.scheme_code,
+        scheme_name: fund.scheme_name,
+        nav: fund.nav,
+        nav_date: fund.nav_date,
+        fetched_at: fetchedAt,
+      });
+    }
+    this.persist();
   }
 
   saveSecurityDisclosure(disclosure: PortfolioDisclosure): void {
@@ -507,6 +619,7 @@ class InMemoryPortfolioDb {
         rating: pos.rating,
       });
     }
+    this.persist();
   }
 
   latestSecurityDisclosures(): EnrichedSecurityRow[] {
@@ -547,6 +660,38 @@ class InMemoryPortfolioDb {
   getImportFinancialYear(importId: number): string {
     return this.imports.find((i) => i.id === importId)?.financial_year ?? "";
   }
+
+  getNotes(): { content: string; updated_at: string | null } {
+    return this.notes;
+  }
+
+  saveNotes(content: string): { content: string; updated_at: string | null } {
+    this.notes = {
+      content,
+      updated_at: isoSecondsNow(),
+    };
+    this.persist();
+    return this.notes;
+  }
+}
+
+function resolveDataFilePath(): string {
+  if (process.env.NPS_DATA_FILE) {
+    return path.resolve(process.env.NPS_DATA_FILE);
+  }
+  if (process.env.NPS_DATA_DIR) {
+    return path.join(path.resolve(process.env.NPS_DATA_DIR), "portfolio.json");
+  }
+  if (process.platform === "win32") {
+    const base =
+      process.env.LOCALAPPDATA ||
+      path.join(os.homedir(), "AppData", "Local");
+    return path.join(base, "NpsPortfolio", "portfolio.json");
+  }
+  const base =
+    process.env.XDG_DATA_HOME ||
+    path.join(os.homedir(), ".local", "share");
+  return path.join(base, "NpsPortfolio", "portfolio.json");
 }
 
 export const db = new InMemoryPortfolioDb();

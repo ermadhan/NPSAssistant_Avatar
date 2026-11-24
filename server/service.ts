@@ -90,9 +90,7 @@ export async function refreshNavs(funds?: FundNav[]): Promise<{
   catalog: FundNav[];
 }> {
   const catalog = funds ?? (await fetchLatest());
-  for (const fund of catalog) {
-    db.saveNavQuote(fund.scheme_code, fund.scheme_name, fund.nav, fund.nav_date);
-  }
+  db.saveNavQuotes(catalog);
   db.applySavedLinks();
 
   const names = db.distinctHoldingSchemeNames();

@@ -537,3 +537,191 @@ function holdingValue(row: EnrichedHoldingRow): number {
 function statementValue(row: EnrichedHoldingRow): number {
   return Number(row.units) * Number(row.statement_nav);
 }
+
+export interface XirrTrendPoint {
+  period: string;
+  as_of_date: string;
+  calculated_xirr: number | null;
+  statement_xirr: number | null;
+}
+
+export function xirrTrends(filters?: {
+  member?: string | null;
+  tier?: string | null;
+  scheme?: string | null;
+}): XirrTrendPoint[] {
+  const allYears = db.listYears();
+  const transactions = db.allCurrentTransactions();
+
+  const histories = new Map<string, EnrichedTransactionRow[]>();
+  for (const row of transactions) {
+    const key = `${row.member_id ?? ""}::${row.tier}::${row.scheme_name}`;
+    const list = histories.get(key) ?? [];
+    list.push(row);
+    histories.set(key, list);
+  }
+
+  const scopedYears = allYears.filter((row) => {
+    if (filters?.member && row.member_id !== filters.member) return false;
+    if (filters?.tier && row.tier !== filters.tier) return false;
+    if (filters?.scheme) {
+      const holdings = db.holdingsForImport(row.id);
+      if (!holdings.some((h) => h.scheme_name === filters.scheme)) return false;
+    }
+    return true;
+  });
+
+  if (scopedYears.length === 0) return [];
+
+  const periods = Array.from(
+    new Set(scopedYears.map((row) => row.financial_year)),
+  ).sort((a, b) => a.localeCompare(b));
+
+  const latestPeriod = periods[periods.length - 1];
+  const currentHoldings = db.currentHoldingRows();
+
+  const points: XirrTrendPoint[] = [];
+
+  for (const period of periods) {
+    const yearsUpToPeriod = scopedYears.filter(
+      (row) => row.financial_year <= period,
+    );
+    const yearsInPeriod = scopedYears.filter(
+      (row) => row.financial_year === period,
+    );
+    const maxAsOf = yearsInPeriod.reduce(
+      (max, r) => (r.as_of_date > max ? r.as_of_date : max),
+      yearsInPeriod[0].as_of_date,
+    );
+
+    // Statement-reported XIRR for this period (holdings-value weighted when multiple accounts)
+    let statementXirr: number | null = null;
+    if (!filters?.scheme) {
+      const reportedRows = yearsInPeriod.filter((r) => r.xirr !== null);
+      if (reportedRows.length === 1) {
+        statementXirr = Math.round(Number(reportedRows[0].xirr) * 100) / 100;
+      } else if (reportedRows.length > 1) {
+        const totalWeight = reportedRows.reduce(
+          (s, r) => s + Number(r.holdings_value || 0),
+          0,
+        );
+        if (totalWeight > 0) {
+          const weighted = reportedRows.reduce(
+            (s, r) => s + Number(r.xirr) * Number(r.holdings_value),
+            0,
+          );
+          statementXirr = Math.round((weighted / totalWeight) * 100) / 100;
+        }
+      }
+    }
+
+    // Cumulative calculated XIRR from earliest snapshot up to this period
+    const earliestByAccount = new Map<string, YearListRow>();
+    const latestUpToByAccount = new Map<string, YearListRow>();
+    for (const row of yearsUpToPeriod) {
+      const key = `${row.member_id}::${row.tier}`;
+      const prevMin = earliestByAccount.get(key);
+      if (!prevMin || row.as_of_date < prevMin.as_of_date) {
+        earliestByAccount.set(key, row);
+      }
+      const prevMax = latestUpToByAccount.get(key);
+      if (!prevMax || row.as_of_date > prevMax.as_of_date) {
+        latestUpToByAccount.set(key, row);
+      }
+    }
+
+    const combinedFlows: Array<[string, number]> = [];
+    for (const [key, start] of earliestByAccount.entries()) {
+      const end = latestUpToByAccount.get(key);
+      if (!end) continue;
+      const [memberId, tier] = key.split("::");
+      const startDay = start.as_of_date;
+      const endDay = end.as_of_date;
+
+      if (filters?.scheme) {
+        const startHoldings = db.holdingsForImport(start.id);
+        const baseline =
+          startHoldings.find((h) => h.scheme_name === filters.scheme) ?? null;
+        if (baseline !== null) {
+          combinedFlows.push([startDay, -statementValue(baseline)]);
+        }
+
+        const txns =
+          histories.get(`${memberId}::${tier}::${filters.scheme}`) ?? [];
+        for (const row of txns) {
+          const day = row.txn_date;
+          if (
+            (baseline !== null && day <= startDay) ||
+            day < startDay ||
+            day > endDay
+          ) {
+            continue;
+          }
+          const flow = cashFlow(row, true);
+          if (flow !== 0) {
+            combinedFlows.push([day, flow]);
+          }
+        }
+
+        let endVal = 0;
+        if (period === latestPeriod) {
+          const cur = currentHoldings.find(
+            (h) =>
+              h.member_id === memberId &&
+              h.tier === tier &&
+              h.scheme_name === filters.scheme,
+          );
+          if (cur) endVal = holdingValue(cur);
+        } else {
+          const endHoldings = db.holdingsForImport(end.id);
+          const endRow = endHoldings.find(
+            (h) => h.scheme_name === filters.scheme,
+          );
+          if (endRow) endVal = statementValue(endRow);
+        }
+        if (endVal > 0) {
+          combinedFlows.push([endDay, endVal]);
+        }
+      } else {
+        if (endDay <= startDay) {
+          continue;
+        }
+        combinedFlows.push([startDay, -Number(start.holdings_value)]);
+        const endHoldings = db.holdingsForImport(end.id);
+        const schemes = new Set(endHoldings.map((h) => h.scheme_name));
+        for (const scheme of schemes) {
+          const txns = histories.get(`${memberId}::${tier}::${scheme}`) ?? [];
+          for (const row of txns) {
+            const day = row.txn_date;
+            if (day <= startDay || day > endDay) continue;
+            const flow = cashFlow(row, false);
+            if (flow !== 0) {
+              combinedFlows.push([day, flow]);
+            }
+          }
+        }
+        const endVal =
+          period === latestPeriod
+            ? currentHoldings
+                .filter((h) => h.member_id === memberId && h.tier === tier)
+                .reduce((sum, h) => sum + holdingValue(h), 0)
+            : Number(end.holdings_value);
+        combinedFlows.push([endDay, endVal]);
+      }
+    }
+
+    const rawCalc = xirr(combinedFlows);
+    const calculatedXirr =
+      rawCalc !== null ? Math.round(rawCalc * 10000) / 100 : null;
+
+    points.push({
+      period,
+      as_of_date: maxAsOf,
+      calculated_xirr: calculatedXirr,
+      statement_xirr: statementXirr,
+    });
+  }
+
+  return points;
+}
+

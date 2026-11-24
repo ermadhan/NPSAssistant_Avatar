@@ -1,4 +1,17 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   formatInr,
   formatReturns,
@@ -11,6 +24,7 @@ import type {
   EnrichedHoldingRow,
   FilterState,
   PortfolioPosition,
+  XirrTrendPoint,
 } from "../types";
 import { FilterBar } from "./FilterBar";
 
@@ -18,14 +32,47 @@ interface OverviewViewProps {
   state: AppStatePayload;
   filters: FilterState;
   onFilterChange: (next: FilterState) => void;
+  onSaveNotes: (content: string) => Promise<void>;
 }
 
 export const OverviewView: React.FC<OverviewViewProps> = ({
   state,
   filters,
   onFilterChange,
+  onSaveNotes,
 }) => {
-  const { years, holdingsByImport, analytics } = state;
+  const { years, holdingsByImport, analytics, notes } = state;
+  const [noteDraft, setNoteDraft] = useState(notes.content);
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [xirrTrends, setXirrTrends] = useState<XirrTrendPoint[]>([]);
+
+  useEffect(() => {
+    setNoteDraft(notes.content);
+  }, [notes.content]);
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (filters.member) params.set("member", filters.member);
+    if (filters.tier) params.set("tier", filters.tier);
+    if (filters.scheme) params.set("scheme", filters.scheme);
+    fetch(`/api/xirr-trends?${params.toString()}`)
+      .then((res) => res.json())
+      .then((payload: { points?: XirrTrendPoint[] }) =>
+        setXirrTrends(payload.points ?? []),
+      )
+      .catch(() => {});
+  }, [filters.member, filters.tier, filters.scheme, state.years, state.currentHoldings]);
+
+  const notesDirty = noteDraft !== notes.content;
+
+  const handleSaveNotesClick = async () => {
+    setSavingNotes(true);
+    try {
+      await onSaveNotes(noteDraft);
+    } finally {
+      setSavingNotes(false);
+    }
+  };
 
   const matchesFilters = (
     row: {
@@ -165,6 +212,12 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   const summaryMembers = Array.from(byMemberSummary.values());
   const familyTier1 = summaryMembers.reduce((s, m) => s + m.nps_tier1, 0);
   const familyTier2 = summaryMembers.reduce((s, m) => s + m.nps_tier2, 0);
+  const memberChartData = summaryMembers
+    .map((m) => ({
+      name: m.name,
+      total: Math.round((m.nps_tier1 + m.nps_tier2) * 100) / 100,
+    }))
+    .sort((a, b) => b.total - a.total);
 
   // Group rows by member
   const rowsByMember = new Map<string, EnrichedHoldingRow[]>();
@@ -178,6 +231,25 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     .filter((r) => r.latest_nav === null)
     .map((r) => r.scheme_name);
 
+  const hasInvestedData =
+    filters.year === null &&
+    scopedPositions.some((r) => r.net_invested !== null);
+  const totalCurrentValue =
+    filters.year === null && scopedPositions.length > 0
+      ? currentTotal
+      : rows.reduce((s, r) => s + rowValue(r), 0);
+  const totalInvestedAmount = hasInvestedData ? netInvestedTotal : null;
+  const absoluteGainLoss =
+    totalInvestedAmount !== null
+      ? totalCurrentValue - totalInvestedAmount
+      : null;
+  const gainLossPct =
+    absoluteGainLoss !== null &&
+    totalInvestedAmount !== null &&
+    totalInvestedAmount !== 0
+      ? (absoluteGainLoss / totalInvestedAmount) * 100
+      : null;
+
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-[22px] font-semibold text-[#17243A]">Portfolio</h1>
@@ -188,6 +260,79 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         filters={filters}
         onChange={onFilterChange}
       />
+
+      <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-5 flex flex-col gap-3">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-[#52627A]">
+            Portfolio summary
+          </span>
+          <span className="text-[11px] text-[#7B8494]">
+            {filters.year !== null
+              ? `FY ${filters.year} snapshot`
+              : "Latest available valuation"}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
+          <div className="flex flex-col gap-1">
+            <span className="text-[12px] text-[#657084]">
+              Total Current Value
+            </span>
+            <span className="text-[22px] font-semibold text-[#17243A]">
+              {rows.length > 0 ? formatInr(totalCurrentValue) : "—"}
+            </span>
+            <span className="text-[11px] text-[#7B8494]">
+              {rows.length > 0
+                ? filters.year !== null
+                  ? "Statement valuation"
+                  : "Priced at latest NAV where available"
+                : "No holdings imported yet"}
+            </span>
+          </div>
+
+          <div className="flex flex-col gap-1 md:border-l md:border-[#E4E8EF] md:pl-4">
+            <span className="text-[12px] text-[#657084]">
+              Total Invested Amount
+            </span>
+            <span className="text-[22px] font-semibold text-[#17243A]">
+              {totalInvestedAmount !== null
+                ? formatInr(totalInvestedAmount) + (incomplete ? " *" : "")
+                : "—"}
+            </span>
+            <span className="text-[11px] text-[#7B8494]">
+              {filters.year !== null
+                ? "Switch Financial year to Latest"
+                : totalInvestedAmount !== null
+                  ? "Net contributions and scheme switches"
+                  : "No contribution basis available"}
+            </span>
+          </div>
+
+          <div className="flex flex-col gap-1 md:border-l md:border-[#E4E8EF] md:pl-4">
+            <span className="text-[12px] text-[#657084]">
+              Overall Absolute Gain/Loss
+            </span>
+            <span
+              className={`text-[22px] font-semibold ${
+                absoluteGainLoss === null
+                  ? "text-[#17243A]"
+                  : absoluteGainLoss >= 0
+                    ? "text-[#0F766E]"
+                    : "text-[#B91C1C]"
+              }`}
+            >
+              {absoluteGainLoss === null
+                ? "—"
+                : `${absoluteGainLoss >= 0 ? "+" : ""}${formatInr(absoluteGainLoss)}`}
+            </span>
+            <span className="text-[11px] text-[#7B8494]">
+              {gainLossPct !== null
+                ? `${gainLossPct >= 0 ? "+" : ""}${gainLossPct.toFixed(2)}% overall return`
+                : "Current value minus invested amount"}
+            </span>
+          </div>
+        </div>
+      </div>
 
       {filters.year === null && rows.length > 0 && (
         <>
@@ -244,6 +389,7 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         </>
       )}
 
+
       {filters.year !== null && rows.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4 flex flex-col gap-1.5">
@@ -269,6 +415,163 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
               </span>
             </div>
           </div>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <section className="flex flex-col gap-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <h2 className="text-[17px] font-semibold text-[#17243A]">
+                XIRR trends
+              </h2>
+              <span className="text-[11px] text-[#7B8494]">
+                Calculated vs. statement XIRR across imported financial years
+              </span>
+            </div>
+
+            <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4">
+              {xirrTrends.some(
+                (pt) => pt.calculated_xirr !== null || pt.statement_xirr !== null,
+              ) ? (
+                <div className="w-full h-[240px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart
+                      data={xirrTrends}
+                      margin={{ top: 8, right: 16, left: 0, bottom: 4 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#E4E8EF" />
+                      <XAxis
+                        dataKey="period"
+                        tick={{ fontSize: 12, fill: "#52627A" }}
+                        axisLine={{ stroke: "#D4DCE8" }}
+                        tickLine={{ stroke: "#D4DCE8" }}
+                      />
+                      <YAxis
+                        tickFormatter={(v) => `${v}%`}
+                        tick={{ fontSize: 12, fill: "#52627A" }}
+                        axisLine={{ stroke: "#D4DCE8" }}
+                        tickLine={{ stroke: "#D4DCE8" }}
+                        width={56}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "#FFFFFF",
+                          borderColor: "#E4E8EF",
+                          borderRadius: "8px",
+                          fontSize: "12px",
+                        }}
+                        formatter={(value) =>
+                          value === null || value === undefined
+                            ? ["—", ""]
+                            : [`${Number(value).toFixed(2)}%`]
+                        }
+                        labelFormatter={(label) => `FY ${label}`}
+                      />
+                      <Legend wrapperStyle={{ fontSize: "12px" }} />
+                      <Line
+                        type="monotone"
+                        dataKey="calculated_xirr"
+                        name="Calculated XIRR (%)"
+                        stroke="#3B6FD8"
+                        strokeWidth={2.5}
+                        dot={{ r: 4, fill: "#3B6FD8" }}
+                        activeDot={{ r: 6 }}
+                        connectNulls={false}
+                      />
+                      {filters.scheme === null && (
+                        <Line
+                          type="monotone"
+                          dataKey="statement_xirr"
+                          name="Statement XIRR (%)"
+                          stroke="#0F766E"
+                          strokeWidth={2}
+                          strokeDasharray="5 5"
+                          dot={{ r: 4, fill: "#0F766E" }}
+                          activeDot={{ r: 6 }}
+                          connectNulls={false}
+                        />
+                      )}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="text-xs text-[#657084]">
+                  Import statements across multiple financial years or with
+                  statement-reported XIRR to view XIRR trends over time.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <h2 className="text-[17px] font-semibold text-[#17243A]">
+                Portfolio by family member
+              </h2>
+              {memberChartData.length > 0 && (
+                <span className="text-[11px] text-[#7B8494]">
+                  Largest: {memberChartData[0].name} (
+                  {formatInr(memberChartData[0].total)})
+                </span>
+              )}
+            </div>
+
+            <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4">
+              <div className="w-full h-[240px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={memberChartData}
+                    margin={{ top: 8, right: 16, left: 8, bottom: 4 }}
+                  >
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="#E4E8EF"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="name"
+                      tick={{ fontSize: 12, fill: "#52627A" }}
+                      axisLine={{ stroke: "#D4DCE8" }}
+                      tickLine={{ stroke: "#D4DCE8" }}
+                    />
+                    <YAxis
+                      tickFormatter={(v) => formatInr(Number(v), 0)}
+                      tick={{ fontSize: 11, fill: "#52627A" }}
+                      axisLine={{ stroke: "#D4DCE8" }}
+                      tickLine={{ stroke: "#D4DCE8" }}
+                      width={86}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: "#FFFFFF",
+                        borderColor: "#E4E8EF",
+                        borderRadius: "8px",
+                        fontSize: "12px",
+                      }}
+                      formatter={(value) => [
+                        formatInr(Number(value ?? 0)),
+                        "Total Current Value",
+                      ]}
+                    />
+                    <Bar
+                      dataKey="total"
+                      name="Total Current Value"
+                      radius={[6, 6, 0, 0]}
+                      maxBarSize={64}
+                    >
+                      {memberChartData.map((entry, index) => (
+                        <Cell
+                          key={entry.name}
+                          fill={index === 0 ? "#2653B5" : "#6E95E4"}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </section>
         </div>
       )}
 
@@ -467,6 +770,44 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
           )}
         </>
       )}
+
+      <section className="flex flex-col gap-2 pt-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-[17px] font-semibold text-[#17243A]">Notes</h2>
+          {notes.updated_at && (
+            <span className="text-[11px] text-[#7B8494]">
+              Last saved {notes.updated_at.replace("T", " ")}
+            </span>
+          )}
+        </div>
+
+        <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4 flex flex-col gap-3">
+          <p className="text-xs text-[#657084]">
+            Record observations, target allocations, or retirement goals for
+            your family portfolio. Stored locally on your device.
+          </p>
+          <textarea
+            value={noteDraft}
+            onChange={(e) => setNoteDraft(e.target.value)}
+            rows={4}
+            placeholder="Write observations or goals for your family portfolio..."
+            className="w-full rounded-lg border border-[#D4DCE8] bg-[#F9FAFC] px-3 py-2 text-xs text-[#17243A] placeholder:text-[#7B8494] focus:bg-white focus:outline-none focus:border-[#3B6FD8] resize-y"
+          />
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-[#7B8494]">
+              {notesDirty ? "Unsaved changes" : "Saved locally"}
+            </span>
+            <button
+              type="button"
+              disabled={!notesDirty || savingNotes}
+              onClick={handleSaveNotesClick}
+              className="px-4 py-1.5 rounded-full bg-[#3B6FD8] text-white text-xs font-medium hover:bg-[#315EC0] disabled:opacity-50 cursor-pointer disabled:cursor-default"
+            >
+              {savingNotes ? "Saving..." : "Save notes"}
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 };

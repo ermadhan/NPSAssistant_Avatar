@@ -34,6 +34,7 @@ const EMPTY_STATE: AppStatePayload = {
   },
   disclosures: [],
   catalog: [],
+  notes: { content: "", updated_at: null },
 };
 
 export default function App() {
@@ -283,6 +284,26 @@ export default function App() {
     }
   };
 
+  const handleSaveNotes = async (content: string) => {
+    try {
+      const res = await fetch("/api/notes", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error || "Could not save notes.");
+      }
+      setState((prev) => ({ ...prev, notes: payload }));
+      setStatus("Saved portfolio notes.");
+    } catch (err) {
+      setStatus(
+        `Could not save notes: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   const triggerDownload = (kind: "holdings" | "transactions") => {
     setMenuOpen(false);
     const params = new URLSearchParams({ format: "xlsx" });
@@ -425,6 +446,7 @@ export default function App() {
                 state={state}
                 filters={filters}
                 onFilterChange={handleFilterChange}
+                onSaveNotes={handleSaveNotes}
               />
             ) : activeView === "allocation" ? (
               <AllocationView

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
-import { allocationSummary, familyPortfolio } from "./server/analytics.ts";
+import { allocationSummary, familyPortfolio, xirrTrends } from "./server/analytics.ts";
 import { db, type EnrichedHoldingRow } from "./server/db.ts";
 import {
   buildSecurityExposure,
@@ -76,6 +76,7 @@ async function startServer() {
     const analytics = familyPortfolio();
     const disclosures = db.latestSecurityDisclosures();
     const catalog = Array.from(db.navQuotes.values());
+    const notes = db.getNotes();
 
     res.json({
       years,
@@ -84,7 +85,30 @@ async function startServer() {
       analytics,
       disclosures,
       catalog,
+      notes,
     });
+  });
+
+  app.get("/api/notes", (_req, res) => {
+    res.json(db.getNotes());
+  });
+
+  app.put("/api/notes", (req, res) => {
+    const { content } = req.body as { content?: unknown };
+    if (typeof content !== "string") {
+      res.status(400).json({ error: "content must be a string." });
+      return;
+    }
+    const saved = db.saveNotes(content);
+    res.json(saved);
+  });
+
+  app.get("/api/xirr-trends", (req, res) => {
+    const member = (req.query.member as string) || null;
+    const tier = (req.query.tier as string) || null;
+    const scheme = (req.query.scheme as string) || null;
+    const points = xirrTrends({ member, tier, scheme });
+    res.json({ points });
   });
 
   app.get("/api/allocation", (req, res) => {
