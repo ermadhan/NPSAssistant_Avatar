@@ -1,0 +1,6 @@
+{
+  "name": "NPS Family Portfolio",
+  "description": "Family NPS portfolio viewer for CRA transaction statements, latest NAVs, XIRR returns, asset allocation, and underlying security exposure.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
