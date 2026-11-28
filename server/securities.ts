@@ -10,6 +10,10 @@ export const LIC_DISCLOSURE_PAGE =
   "https://www.licpensionfund.in/portfolio-disclosures";
 export const HDFC_DISCLOSURE_PAGE =
   "https://www.hdfcpension.com/public-disclosures/";
+export const SBI_DISCLOSURE_PAGE =
+  "https://www.sbipensionfunds.co.in/disclosures/portfolio-details/";
+export const SBI_PAGE_DATA_URL =
+  "https://www.sbipensionfunds.co.in/page-data/disclosures/portfolio-details/page-data.json";
 
 const SUPPORTED_SCHEMES: Array<[string, string]> = [
   ["E", "nps_tier1"],
@@ -193,6 +197,213 @@ export async function fetchLatestLicDisclosure(): Promise<PortfolioDisclosure> {
     source_url: LIC_DISCLOSURE_PAGE,
     positions,
   };
+}
+
+interface SbiReportCandidate {
+  url: string;
+  name: string;
+  score: number;
+  index: number;
+}
+
+function parseSbiReportScore(text: string): number {
+  const normalized = text.replace(/[_-]+/g, " ");
+  let month = 0;
+  for (const [token, num] of Object.entries(MONTHS_FULL)) {
+    const re = new RegExp(`\\b${token}(?:\\s*|\\d{2,4}\\b)`, "i");
+    if (re.test(normalized)) {
+      month = num;
+      break;
+    }
+  }
+  const yearMatch4 = normalized.match(/\b(20\d{2})\b/);
+  const yearMatch2 = normalized.match(/(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s*(\d{2})\b/i);
+  let year = 0;
+  if (yearMatch4) {
+    year = Number(yearMatch4[1]);
+  } else if (yearMatch2) {
+    year = 2000 + Number(yearMatch2[1]);
+  }
+  return year > 0 && month > 0 ? year * 100 + month : 0;
+}
+
+async function fetchSbiSessionHeaders(): Promise<Record<string, string>> {
+  const userAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+  const initResp = await fetch(SBI_DISCLOSURE_PAGE, {
+    headers: { "User-Agent": userAgent },
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!initResp.ok) {
+    throw new Error(`HTTP ${initResp.status} accessing ${SBI_DISCLOSURE_PAGE}`);
+  }
+  const initHtml = await initResp.text();
+
+  if (!initHtml.includes("Fingerprint=")) {
+    return { "User-Agent": userAgent };
+  }
+
+  const jar = new Map<string, string>();
+  const addCookies = (rawList: string[]) => {
+    for (const raw of rawList) {
+      const pair = raw.split(";")[0]?.trim() ?? "";
+      const eq = pair.indexOf("=");
+      if (eq <= 0) continue;
+      const key = pair.slice(0, eq);
+      const val = pair.slice(eq + 1);
+      if (val) jar.set(key, val);
+    }
+  };
+  addCookies(initResp.headers.getSetCookie?.() ?? []);
+
+  const fpPayload = {
+    version: 1,
+    src: "",
+    userAgent,
+    checks: {
+      "1000": userAgent.replace("Mozilla/", ""),
+      "1001": 5,
+      "1002": 1,
+      "1003": 4,
+      "1004": 1,
+      "1005": 2,
+      "1006": "en-US",
+      "1007": { permission: "default", state: {} },
+      "1008": null,
+      "1009": "Mozilla",
+      "1010": "Netscape",
+      "1100": { width: 1440, height: 900 },
+      "1101": false,
+      "1102": {},
+      "1103": null,
+      "1104": null,
+      "1105": null,
+      "1106": null,
+      "1107": null,
+      "1108": null,
+      "1109": null,
+      "1110": null,
+      "1111": false,
+      "1900": 50,
+      "1200": { width: 0, height: 0 },
+    },
+  };
+
+  const verifyUrl =
+    "https://www.sbipensionfunds.co.in/__verify/fp?url=%2Fdisclosures%2Fportfolio-details%2F";
+  const fpResp = await fetch(verifyUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": userAgent,
+      Cookie: Array.from(jar.entries())
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; "),
+    },
+    body: JSON.stringify(fpPayload),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!fpResp.ok) {
+    throw new Error(`SBI session verification returned HTTP ${fpResp.status}`);
+  }
+  const ttlText = await fpResp.text();
+  addCookies(fpResp.headers.getSetCookie?.() ?? []);
+  const ttlSeconds = Number(ttlText) || 300;
+  jar.set("__hd_fingerprint", String(Date.now() + ttlSeconds * 1000));
+
+  return {
+    "User-Agent": userAgent,
+    Cookie: Array.from(jar.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; "),
+  };
+}
+
+export async function fetchLatestSbiDisclosure(): Promise<PortfolioDisclosure> {
+  const headers = await fetchSbiSessionHeaders();
+  const pageDataResp = await fetch(SBI_PAGE_DATA_URL, {
+    headers,
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!pageDataResp.ok) {
+    throw new Error(`HTTP ${pageDataResp.status} fetching SBI disclosure index.`);
+  }
+  const pageData = (await pageDataResp.json()) as {
+    result?: {
+      pageContext?: {
+        englishPageData?: {
+          disclosureSubData?: {
+            upload_pdf?: {
+              data?: {
+                attributes?: {
+                  Reports?: Array<{
+                    Title?: string;
+                    pdf?: {
+                      data?: {
+                        attributes?: { url?: string; name?: string };
+                      };
+                    };
+                  }>;
+                };
+              };
+            };
+          };
+        };
+      };
+    };
+  };
+
+  const candidates: SbiReportCandidate[] = [];
+  const reports =
+    pageData.result?.pageContext?.englishPageData?.disclosureSubData?.upload_pdf?.data
+      ?.attributes?.Reports ?? [];
+
+  for (let idx = 0; idx < reports.length; idx++) {
+    const attrs = reports[idx]?.pdf?.data?.attributes;
+    const url = attrs?.url ? String(attrs.url) : "";
+    const name = attrs?.name ? String(attrs.name) : url.split("/").pop() || "";
+    if (!/\.(?:xlsx|xls)$/i.test(url)) continue;
+    const score = parseSbiReportScore(`${reports[idx]?.Title ?? ""} ${name} ${url}`);
+    candidates.push({ url, name, score, index: idx });
+  }
+
+  if (candidates.length === 0) {
+    const raw = JSON.stringify(pageData);
+    const fallbackUrls = Array.from(
+      new Set([...raw.matchAll(/\/uploads\/[^"\\]+\.(?:xlsx|xls)/gi)].map((m) => m[0])),
+    );
+    fallbackUrls.forEach((url, idx) => {
+      const name = url.split("/").pop() || "portfolio.xlsx";
+      candidates.push({
+        url,
+        name,
+        score: parseSbiReportScore(`${name} ${url}`),
+        index: idx,
+      });
+    });
+  }
+
+  if (candidates.length === 0) {
+    throw new Error("No monthly SBI NPS portfolio workbook was found.");
+  }
+
+  candidates.sort((a, b) => {
+    if (a.score !== b.score) return b.score - a.score;
+    return b.index - a.index;
+  });
+
+  const latest = candidates[0];
+  const fileUrl = new URL(latest.url, SBI_DISCLOSURE_PAGE).toString();
+  const fileResp = await fetch(fileUrl, {
+    headers,
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!fileResp.ok) {
+    throw new Error(`HTTP ${fileResp.status} fetching ${fileUrl}`);
+  }
+  const workbook = Buffer.from(await fileResp.arrayBuffer());
+  return parseManagerWorkbook(workbook, "SBI", SBI_DISCLOSURE_PAGE, latest.name);
 }
 
 interface DisclosureLink {
@@ -448,6 +659,43 @@ function parseSchemeSheet(sheetName: string): [string, string] | null {
   return [schemeAsset, tier];
 }
 
+function extractColumnsFromHeader(values: string[]): Record<string, number> {
+  const marketValueCol = values.findIndex(
+    (value) =>
+      value.endsWith("market value") ||
+      value === "mkt_value" ||
+      value === "mkt value",
+  );
+  const nameCol = values.includes("particulars")
+    ? values.indexOf("particulars")
+    : values.indexOf("name of instruments");
+  return {
+    name: nameCol,
+    market_value: marketValueCol,
+    weight: values.findIndex(
+      (value) => value === "% of portfolio" || value === "percentage of portfolio",
+    ),
+    isin: values.findIndex((value) => value.startsWith("isin")),
+    industry: values.findIndex((value) => value === "industry"),
+    quantity: values.findIndex(
+      (value) => value === "quantity" || value === "no of units",
+    ),
+    rating: values.findIndex((value) => value.startsWith("rating")),
+  };
+}
+
+function isHoldingHeaderRow(values: string[]): boolean {
+  return (
+    (values.includes("particulars") || values.includes("name of instruments")) &&
+    values.some(
+      (value) =>
+        value.endsWith("market value") ||
+        value === "mkt_value" ||
+        value === "mkt value",
+    )
+  );
+}
+
 function parseSchemeSheetRows(
   rows: unknown[][],
   scheme: [string, string],
@@ -458,41 +706,28 @@ function parseSchemeSheetRows(
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index] ?? [];
     const values = row.map(normalizeCell);
-    if (
-      values.includes("particulars") &&
-      values.some((value) => value.endsWith("market value"))
-    ) {
+    if (isHoldingHeaderRow(values)) {
       headerRow = index;
-      const marketValueCol = values.findIndex((value) => value.endsWith("market value"));
-      columns = {
-        name: values.indexOf("particulars"),
-        market_value: marketValueCol,
-        weight: values.findIndex(
-          (value) => value === "% of portfolio" || value === "percentage of portfolio",
-        ),
-        isin: values.findIndex((value) => value.startsWith("isin")),
-        industry: values.findIndex((value) => value === "industry"),
-        quantity: values.findIndex(
-          (value) => value === "quantity" || value === "no of units",
-        ),
-        rating: values.findIndex((value) => value.startsWith("rating")),
-      };
+      columns = extractColumnsFromHeader(values);
       break;
     }
   }
 
   if (headerRow === -1) {
-    throw new Error("An ICICI scheme worksheet is missing its portfolio table header.");
+    throw new Error("A scheme worksheet is missing its portfolio table header.");
   }
 
   let disclosureDate: string | null = null;
   for (let i = 0; i < headerRow; i++) {
     const row = rows[i] ?? [];
     const dateLabel = normalizeCell(row[0]);
-    if (/^(?:portfolio )?statement as on\b/.test(dateLabel) && row.length > 1) {
+    if (/^(?:portfolio )?statements? as on\b/.test(dateLabel)) {
       const candidates: unknown[] = [
-        row[1],
-        String(row[0] ?? "").replace(/^(?:portfolio )?statement as on\s*:?\s*/i, ""),
+        row.length > 1 ? row[1] : null,
+        String(row[0] ?? "").replace(
+          /^(?:portfolio )?statements? as on\s*:?\s*/i,
+          "",
+        ),
       ];
       for (const candidate of candidates) {
         const parsed = asDate(candidate);
@@ -501,7 +736,7 @@ function parseSchemeSheetRows(
           break;
         }
       }
-      break;
+      if (disclosureDate !== null) break;
     }
   }
 
@@ -516,19 +751,78 @@ function parseSchemeSheetRows(
       totalValue = toNumber(cellAt(row, columns.market_value));
       break;
     }
+    if (labels[0] === "total aum") {
+      totalValue = toNumber(cellAt(row, 1));
+      break;
+    }
   }
 
   const records: SecurityPosition[] = [];
   let instrumentType = "Other";
+  for (let i = 0; i < headerRow; i++) {
+    const label = normalizeCell((rows[i] ?? [])[0]);
+    const section = sectionInstrumentType(label);
+    if (section !== null) {
+      instrumentType = section;
+    }
+  }
 
   for (const row of rows.slice(headerRow + 1)) {
     const labels = (row ?? []).map(normalizeCell);
-    if (labels.some((label) => label.startsWith("grand total"))) break;
+    if (
+      labels.some((label) => label.startsWith("grand total")) ||
+      labels[0] === "total aum"
+    ) {
+      break;
+    }
+    if (isHoldingHeaderRow(labels)) {
+      columns = extractColumnsFromHeader(labels);
+      continue;
+    }
     if (labels.some((label) => label.includes("subtotal") || label === "total")) continue;
 
     const name = toStringVal(cellAt(row, columns.name));
     const normalizedName = normalizeCell(name);
     if (!normalizedName) continue;
+
+    if (normalizedName === "net current assets") {
+      const ncaValue =
+        toNumber(cellAt(row, columns.market_value)) ?? toNumber(cellAt(row, 1));
+      let ncaWeight =
+        (columns.weight >= 0 ? toNumber(cellAt(row, columns.weight)) : null) ??
+        toNumber(cellAt(row, 2));
+      if (ncaWeight === null && ncaValue !== null && totalValue) {
+        ncaWeight = ncaValue / totalValue;
+      }
+      if (ncaValue !== null && ncaWeight !== null) {
+        if (totalValue && totalValue > 0 && ncaValue !== 0) {
+          const approxRatio = ncaValue / totalValue;
+          if (
+            Math.abs(ncaWeight / 100 - approxRatio) <
+            Math.abs(ncaWeight - approxRatio)
+          ) {
+            ncaWeight /= 100;
+          }
+        } else if (Math.abs(ncaWeight) > 1 && Math.abs(ncaWeight) <= 100) {
+          ncaWeight /= 100;
+        }
+        if (ncaWeight >= -1 && ncaWeight <= 1) {
+          records.push({
+            scheme_asset: scheme[0],
+            tier: scheme[1],
+            security_name: name,
+            isin: "",
+            industry: "",
+            instrument_type: "Money market",
+            quantity: null,
+            market_value: ncaValue,
+            portfolio_weight: ncaWeight,
+            rating: "",
+          });
+        }
+      }
+      continue;
+    }
 
     const sectionType = sectionInstrumentType(normalizedName);
     const marketValue = toNumber(cellAt(row, columns.market_value));
@@ -546,6 +840,7 @@ function parseSchemeSheetRows(
       marketValue === null ||
       [
         "particulars",
+        "name of instruments",
         "equity instruments",
         "debt instruments",
         "government securities",
@@ -561,7 +856,9 @@ function parseSchemeSheetRows(
     let securityType: string;
     if (
       normalizedName.startsWith("cash/") ||
-      ["overnight fund", "liquid fund", "treps"].some((term) => normalizedName.includes(term))
+      ["overnight fund", "liquid fund", "treps", "trep/"].some((term) =>
+        normalizedName.includes(term),
+      )
     ) {
       securityType = "Money market";
     } else if (rating.toUpperCase() === "SOV" || isGovernmentSecurity(name, isin)) {
@@ -582,7 +879,15 @@ function parseSchemeSheetRows(
       weight = marketValue / totalValue;
     }
     if (weight === null) continue;
-    if (weight > 1 && weight <= 100) {
+    if (totalValue && totalValue > 0 && marketValue !== 0) {
+      const approxRatio = marketValue / totalValue;
+      if (
+        Math.abs(weight / 100 - approxRatio) <
+        Math.abs(weight - approxRatio)
+      ) {
+        weight /= 100;
+      }
+    } else if (weight > 1 && weight <= 100) {
       weight /= 100;
     }
     if (weight < -1 || weight > 1) {
@@ -626,6 +931,15 @@ function sectionInstrumentType(label: string): string | null {
     return "Equity";
   }
   if (
+    label.includes("short-term debt") ||
+    label.includes("money market instruments") ||
+    label.includes("treasury bill") ||
+    label.includes("commercial paper") ||
+    label.includes("overnight funds")
+  ) {
+    return "Money market";
+  }
+  if (
     label.includes("government securit") ||
     label.includes("state government loans") ||
     label.includes("central government security")
@@ -641,18 +955,9 @@ function sectionInstrumentType(label: string): string | null {
     return "Corporate bond";
   }
   if (
-    label.includes("money market instruments") ||
-    label.includes("treasury bill") ||
-    label.includes("commercial paper")
-  ) {
-    return "Money market";
-  }
-  if (label.includes("overnight funds")) {
-    return "Money market";
-  }
-  if (
     label.includes("real estate investment trust units") ||
-    label.includes("mutual fund units")
+    label.includes("mutual fund units") ||
+    label.includes("asset backed")
   ) {
     return "Other";
   }
@@ -680,7 +985,7 @@ function assetFromSchemeName(name: string): string | null {
 
 function fundManagerFromSchemeName(name: string): string | null {
   const upper = name.toUpperCase();
-  for (const fm of ["ICICI", "HDFC", "LIC"]) {
+  for (const fm of ["ICICI", "HDFC", "LIC", "SBI"]) {
     if (upper.includes(fm)) return fm;
   }
   return null;

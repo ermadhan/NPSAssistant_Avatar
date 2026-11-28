@@ -10,6 +10,7 @@ import {
   fetchLatestHdfcDisclosure,
   fetchLatestIciciDisclosure,
   fetchLatestLicDisclosure,
+  fetchLatestSbiDisclosure,
 } from "./server/securities.ts";
 import {
   ImportRejected,
@@ -382,6 +383,7 @@ async function startServer() {
         ICICI: fetchLatestIciciDisclosure,
         HDFC: fetchLatestHdfcDisclosure,
         LIC: fetchLatestLicDisclosure,
+        SBI: fetchLatestSbiDisclosure,
       };
       const fetcher = manager ? fetchers[manager] : undefined;
       if (!fetcher || !manager) {

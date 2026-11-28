@@ -248,7 +248,7 @@ export default function App() {
   };
 
   const handleRefreshSecurities = async (
-    manager: "ICICI" | "HDFC" | "LIC",
+    manager: "ICICI" | "HDFC" | "LIC" | "SBI",
   ) => {
     if (busy) return;
     setBusy(true);

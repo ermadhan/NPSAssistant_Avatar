@@ -14,7 +14,7 @@ interface SecuritiesViewProps {
   holdingsByImport: Record<number, EnrichedHoldingRow[]>;
   filters: FilterState;
   onFilterChange: (next: FilterState) => void;
-  onRefreshSecurities: (manager: "ICICI" | "HDFC" | "LIC") => void;
+  onRefreshSecurities: (manager: "ICICI" | "HDFC" | "LIC" | "SBI") => void;
   busy: boolean;
   refreshTick: number;
 }
@@ -80,7 +80,7 @@ export const SecuritiesView: React.FC<SecuritiesViewProps> = ({
       </p>
 
       <div className="flex flex-wrap gap-2.5">
-        {(["ICICI", "HDFC", "LIC"] as const).map((manager) => (
+        {(["ICICI", "HDFC", "LIC", "SBI"] as const).map((manager) => (
           <button
             key={manager}
             type="button"
@@ -103,7 +103,7 @@ export const SecuritiesView: React.FC<SecuritiesViewProps> = ({
       ) : data && !data.hasDisclosures ? (
         <div className="bg-[#FFF8E6] p-5 rounded-xl text-sm text-[#17243A]">
           No official portfolio disclosure has been downloaded yet. Refresh to
-          fetch the latest ICICI, HDFC, or LIC Pension Fund report. Other
+          fetch the latest ICICI, HDFC, LIC, or SBI Pension Fund report. Other
           pension fund managers and unsupported schemes remain uncovered.
         </div>
       ) : data ? (
