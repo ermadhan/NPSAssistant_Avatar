@@ -509,10 +509,22 @@ export function parseManagerWorkbook(
   };
 }
 
+export interface SecuritySchemeContribution {
+  scheme_name: string;
+  tier: string;
+  weight_in_scheme: number;
+  current_exposure: number;
+  invested_exposure: number | null;
+}
+
 export function buildSecurityExposure(
   holdings: EnrichedHoldingRow[],
   disclosureRows: EnrichedSecurityRow[],
   memberId?: string | null,
+  holdingMetrics?: Map<
+    string,
+    { net_invested: number | null; invested_complete: boolean }
+  >,
 ): {
   positions: Array<{
     security_name: string;
@@ -520,12 +532,19 @@ export function buildSecurityExposure(
     industry: string;
     instrument_type: string;
     exposure: number;
+    invested_exposure: number | null;
+    invested_complete: boolean;
+    estimated_shares: number | null;
     schemes: string[];
+    scheme_breakdown: SecuritySchemeContribution[];
     portfolio_weight: number;
+    equity_weight: number | null;
   }>;
   total_value: number;
   covered_value: number;
   coverage: number;
+  total_equity_exposure: number;
+  total_equity_invested: number | null;
   unsupported: Record<string, number>;
   disclosure_date: string | null;
 } {
@@ -545,7 +564,13 @@ export function buildSecurityExposure(
       industry: string;
       instrument_type: string;
       exposure: number;
+      invested_exposure: number;
+      has_invested_basis: boolean;
+      invested_complete: boolean;
+      estimated_shares: number;
+      has_shares: boolean;
       schemes: Set<string>;
+      schemeBreakdown: Map<string, SecuritySchemeContribution>;
     }
   >();
 
@@ -563,6 +588,12 @@ export function buildSecurityExposure(
       holding.latest_nav !== null ? Number(holding.latest_nav) : Number(holding.statement_nav);
     const value = Number(holding.units) * price;
     totalValue += value;
+
+    const metric = holdingMetrics?.get(
+      `${holding.member_id}::${holding.tier}::${name}`,
+    );
+    const holdingInvested = metric?.net_invested ?? null;
+    const holdingComplete = metric?.invested_complete ?? false;
 
     const schemeAsset = assetFromSchemeName(name);
     const fundManager = fundManagerFromSchemeName(name);
@@ -590,12 +621,75 @@ export function buildSecurityExposure(
           industry: security.industry || "",
           instrument_type: security.instrument_type,
           exposure: 0.0,
+          invested_exposure: 0.0,
+          has_invested_basis: false,
+          invested_complete: true,
+          estimated_shares: 0.0,
+          has_shares: false,
           schemes: new Set<string>(),
+          schemeBreakdown: new Map<string, SecuritySchemeContribution>(),
         };
         positions.set(securityKey, item);
       }
-      item.exposure += value * Number(security.portfolio_weight);
+
+      const weight = Number(security.portfolio_weight);
+      const secExposure = value * weight;
+      const secInvested =
+        holdingInvested !== null ? holdingInvested * weight : null;
+
+      item.exposure += secExposure;
+      if (secInvested !== null) {
+        item.invested_exposure += secInvested;
+        item.has_invested_basis = true;
+        if (!holdingComplete) {
+          item.invested_complete = false;
+        }
+      } else {
+        item.invested_complete = false;
+      }
+
+      if (
+        security.instrument_type === "Equity" &&
+        security.quantity !== null &&
+        security.quantity > 0 &&
+        security.market_value > 0
+      ) {
+        item.estimated_shares +=
+          (secExposure / Number(security.market_value)) * Number(security.quantity);
+        item.has_shares = true;
+      }
+
       item.schemes.add(name);
+      const sbKey = `${holding.tier}::${name}`;
+      const existingSb = item.schemeBreakdown.get(sbKey);
+      if (existingSb) {
+        existingSb.current_exposure += secExposure;
+        if (secInvested !== null) {
+          existingSb.invested_exposure =
+            (existingSb.invested_exposure ?? 0) + secInvested;
+        }
+      } else {
+        item.schemeBreakdown.set(sbKey, {
+          scheme_name: name,
+          tier: holding.tier,
+          weight_in_scheme: weight,
+          current_exposure: secExposure,
+          invested_exposure: secInvested,
+        });
+      }
+    }
+  }
+
+  let totalEquityExposure = 0.0;
+  let totalEquityInvested = 0.0;
+  let hasEquityInvested = false;
+  for (const item of positions.values()) {
+    if (item.instrument_type === "Equity") {
+      totalEquityExposure += item.exposure;
+      if (item.has_invested_basis) {
+        totalEquityInvested += item.invested_exposure;
+        hasEquityInvested = true;
+      }
     }
   }
 
@@ -606,8 +700,18 @@ export function buildSecurityExposure(
       industry: item.industry,
       instrument_type: item.instrument_type,
       exposure: item.exposure,
+      invested_exposure: item.has_invested_basis ? item.invested_exposure : null,
+      invested_complete: item.has_invested_basis ? item.invested_complete : false,
+      estimated_shares: item.has_shares ? item.estimated_shares : null,
       schemes: Array.from(item.schemes).sort(),
+      scheme_breakdown: Array.from(item.schemeBreakdown.values()).sort(
+        (a, b) => b.current_exposure - a.current_exposure,
+      ),
       portfolio_weight: totalValue === 0 ? 0.0 : item.exposure / totalValue,
+      equity_weight:
+        item.instrument_type === "Equity" && totalEquityExposure > 0
+          ? item.exposure / totalEquityExposure
+          : null,
     }))
     .sort((a, b) => b.exposure - a.exposure);
 
@@ -620,6 +724,8 @@ export function buildSecurityExposure(
     total_value: totalValue,
     covered_value: coveredValue,
     coverage: totalValue === 0 ? 0.0 : coveredValue / totalValue,
+    total_equity_exposure: totalEquityExposure,
+    total_equity_invested: hasEquityInvested ? totalEquityInvested : null,
     unsupported,
     disclosure_date: dates.length > 0 ? dates[dates.length - 1] : null,
   };

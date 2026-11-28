@@ -257,7 +257,28 @@ async function startServer() {
       year,
     });
     const disclosures = db.latestSecurityDisclosures();
-    const exposure = buildSecurityExposure(currentRows, disclosures);
+    const holdingMetrics = new Map<
+      string,
+      { net_invested: number | null; invested_complete: boolean }
+    >();
+    if (!year) {
+      const portfolio = familyPortfolio();
+      for (const pos of portfolio.positions) {
+        holdingMetrics.set(
+          `${pos.member_id}::${pos.tier}::${pos.scheme_name}`,
+          {
+            net_invested: pos.net_invested,
+            invested_complete: pos.invested_complete,
+          },
+        );
+      }
+    }
+    const exposure = buildSecurityExposure(
+      currentRows,
+      disclosures,
+      null,
+      holdingMetrics,
+    );
     const disclosureDates: Record<string, string> = {};
     const sourceUrls = new Set<string>();
     for (const row of disclosures) {

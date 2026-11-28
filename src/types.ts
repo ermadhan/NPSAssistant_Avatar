@@ -148,14 +148,27 @@ export interface AllocationPayload {
   hasVisibleRows: boolean;
 }
 
+export interface SecuritySchemeContribution {
+  scheme_name: string;
+  tier: string;
+  weight_in_scheme: number;
+  current_exposure: number;
+  invested_exposure: number | null;
+}
+
 export interface SecurityExposurePosition {
   security_name: string;
   isin: string;
   industry: string;
   instrument_type: string;
   exposure: number;
+  invested_exposure: number | null;
+  invested_complete: boolean;
+  estimated_shares: number | null;
   schemes: string[];
+  scheme_breakdown: SecuritySchemeContribution[];
   portfolio_weight: number;
+  equity_weight: number | null;
 }
 
 export interface SecuritiesPayload {
@@ -169,6 +182,8 @@ export interface SecuritiesPayload {
     total_value: number;
     covered_value: number;
     coverage: number;
+    total_equity_exposure: number;
+    total_equity_invested: number | null;
     unsupported: Record<string, number>;
     disclosure_date: string | null;
   };
