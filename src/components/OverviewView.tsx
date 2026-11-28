@@ -227,6 +227,151 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     rowsByMember.set(row.member_id, list);
   }
 
+  interface MemberXirrDetailRow {
+    key: string;
+    member: string;
+    tierLabelText: string;
+    period: string;
+    currentValue: number;
+    netInvested: number | null;
+    investedComplete: boolean;
+    calculatedXirr: number | null;
+    statementXirr: number | null;
+    isSummary?: boolean;
+  }
+
+  const memberXirrRows: MemberXirrDetailRow[] = (() => {
+    if (rows.length === 0) return [];
+    const result: MemberXirrDetailRow[] = [];
+
+    if (filters.scheme !== null) {
+      const matchingPositions = analytics.positions.filter(
+        (pos) =>
+          pos.scheme_name === filters.scheme &&
+          (filters.member === null || pos.member_id === filters.member) &&
+          (filters.tier === null || pos.tier === filters.tier),
+      );
+      for (const pos of matchingPositions) {
+        result.push({
+          key: `${pos.member_id}::${pos.tier}::${pos.scheme_name}`,
+          member: pos.member,
+          tierLabelText: tierLabel(pos.tier),
+          period: pos.as_of_date,
+          currentValue: pos.current_value,
+          netInvested: pos.net_invested,
+          investedComplete: pos.invested_complete,
+          calculatedXirr: pos.calculated_xirr,
+          statementXirr: pos.reported_xirr,
+        });
+      }
+      return result;
+    }
+
+    const activeTiers = filters.tier
+      ? [filters.tier]
+      : ["nps_tier1", "nps_tier2"];
+
+    const summarizePositions = (list: PortfolioPosition[]) => {
+      const val = list.reduce((s, p) => s + p.current_value, 0);
+      const withBasis = list.filter((p) => p.net_invested !== null);
+      const inv =
+        withBasis.length > 0
+          ? withBasis.reduce((s, p) => s + (p.net_invested ?? 0), 0)
+          : null;
+      const complete =
+        list.length > 0 && list.every((p) => p.invested_complete);
+      return { val, inv, complete };
+    };
+
+    for (const [memberId, memberHoldingRows] of rowsByMember.entries()) {
+      const memberName =
+        memberHoldingRows[0]?.subscriber_name || "NPS subscriber";
+      const memberTiersPresent = activeTiers.filter((t) =>
+        memberHoldingRows.some((r) => r.tier === t),
+      );
+
+      for (const tier of memberTiersPresent) {
+        const calcRow = analytics.calculated_xirr.find(
+          (r) => r.member_id === memberId && r.tier === tier,
+        );
+        const repRow = analytics.reported_xirr.find(
+          (r) => r.member_id === memberId && r.tier === tier,
+        );
+        const tierPositions = analytics.positions.filter(
+          (p) => p.member_id === memberId && p.tier === tier,
+        );
+        const { val, inv, complete } = summarizePositions(tierPositions);
+        const fallbackVal = memberHoldingRows
+          .filter((r) => r.tier === tier)
+          .reduce((s, r) => s + rowValue(r), 0);
+
+        result.push({
+          key: `${memberId}::${tier}`,
+          member: memberName,
+          tierLabelText: tierLabel(tier),
+          period:
+            calcRow?.start_date && calcRow?.end_date
+              ? `${calcRow.start_date} – ${calcRow.end_date}`
+              : "—",
+          currentValue: tierPositions.length > 0 ? val : fallbackVal,
+          netInvested: inv,
+          investedComplete: complete,
+          calculatedXirr: calcRow?.calculated_xirr ?? null,
+          statementXirr: repRow?.reported_xirr ?? null,
+        });
+      }
+
+      if (filters.tier === null && memberTiersPresent.length > 1) {
+        const memberCombined = (analytics.member_xirr ?? []).find(
+          (r) => r.member_id === memberId,
+        );
+        const memberPositions = analytics.positions.filter(
+          (p) => p.member_id === memberId,
+        );
+        const { val, inv, complete } = summarizePositions(memberPositions);
+        result.push({
+          key: `${memberId}::combined`,
+          member: memberName,
+          tierLabelText: "Combined",
+          period:
+            memberCombined?.start_date && memberCombined?.end_date
+              ? `${memberCombined.start_date} – ${memberCombined.end_date}`
+              : "—",
+          currentValue: val,
+          netInvested: inv,
+          investedComplete: complete,
+          calculatedXirr: memberCombined?.calculated_xirr ?? null,
+          statementXirr: null,
+          isSummary: true,
+        });
+      }
+    }
+
+    if (filters.member === null && rowsByMember.size > 1) {
+      const familyRow = analytics.calculated_xirr.find(
+        (r) => r.member_id === "family" && r.tier === filters.tier,
+      );
+      const familyPositions = analytics.positions.filter(
+        (p) => filters.tier === null || p.tier === filters.tier,
+      );
+      const { val, inv, complete } = summarizePositions(familyPositions);
+      result.push({
+        key: `family::${filters.tier ?? "all"}`,
+        member: "Family",
+        tierLabelText: filters.tier ? tierLabel(filters.tier) : "All tiers",
+        period: "All imported snapshots",
+        currentValue: val,
+        netInvested: inv,
+        investedComplete: complete,
+        calculatedXirr: familyRow?.calculated_xirr ?? null,
+        statementXirr: null,
+        isSummary: true,
+      });
+    }
+
+    return result;
+  })();
+
   const missingNavSchemes = rows
     .filter((r) => r.latest_nav === null)
     .map((r) => r.scheme_name);
@@ -419,128 +564,39 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       )}
 
       {rows.length > 0 && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <section className="flex flex-col gap-2">
-            <div className="flex items-baseline justify-between gap-2">
-              <h2 className="text-[17px] font-semibold text-[#17243A]">
-                XIRR trends
-              </h2>
-              <span className="text-[11px] text-[#7B8494]">
-                Calculated vs. statement XIRR across imported financial years
-              </span>
-            </div>
+        <section className="flex flex-col gap-3">
+          <div className="flex items-baseline justify-between gap-2">
+            <h2 className="text-[17px] font-semibold text-[#17243A]">
+              XIRR trends
+            </h2>
+            <span className="text-[11px] text-[#7B8494]">
+              Calculated vs. statement XIRR across imported financial years
+            </span>
+          </div>
 
-            <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4">
-              {xirrTrends.some(
-                (pt) => pt.calculated_xirr !== null || pt.statement_xirr !== null,
-              ) ? (
-                <div className="w-full h-[240px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart
-                      data={xirrTrends}
-                      margin={{ top: 8, right: 16, left: 0, bottom: 4 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="#E4E8EF" />
-                      <XAxis
-                        dataKey="period"
-                        tick={{ fontSize: 12, fill: "#52627A" }}
-                        axisLine={{ stroke: "#D4DCE8" }}
-                        tickLine={{ stroke: "#D4DCE8" }}
-                      />
-                      <YAxis
-                        tickFormatter={(v) => `${v}%`}
-                        tick={{ fontSize: 12, fill: "#52627A" }}
-                        axisLine={{ stroke: "#D4DCE8" }}
-                        tickLine={{ stroke: "#D4DCE8" }}
-                        width={56}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "#FFFFFF",
-                          borderColor: "#E4E8EF",
-                          borderRadius: "8px",
-                          fontSize: "12px",
-                        }}
-                        formatter={(value) =>
-                          value === null || value === undefined
-                            ? ["—", ""]
-                            : [`${Number(value).toFixed(2)}%`]
-                        }
-                        labelFormatter={(label) => `FY ${label}`}
-                      />
-                      <Legend wrapperStyle={{ fontSize: "12px" }} />
-                      <Line
-                        type="monotone"
-                        dataKey="calculated_xirr"
-                        name="Calculated XIRR (%)"
-                        stroke="#3B6FD8"
-                        strokeWidth={2.5}
-                        dot={{ r: 4, fill: "#3B6FD8" }}
-                        activeDot={{ r: 6 }}
-                        connectNulls={false}
-                      />
-                      {filters.scheme === null && (
-                        <Line
-                          type="monotone"
-                          dataKey="statement_xirr"
-                          name="Statement XIRR (%)"
-                          stroke="#0F766E"
-                          strokeWidth={2}
-                          strokeDasharray="5 5"
-                          dot={{ r: 4, fill: "#0F766E" }}
-                          activeDot={{ r: 6 }}
-                          connectNulls={false}
-                        />
-                      )}
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <p className="text-xs text-[#657084]">
-                  Import statements across multiple financial years or with
-                  statement-reported XIRR to view XIRR trends over time.
-                </p>
-              )}
-            </div>
-          </section>
-
-          <section className="flex flex-col gap-2">
-            <div className="flex items-baseline justify-between gap-2">
-              <h2 className="text-[17px] font-semibold text-[#17243A]">
-                Portfolio by family member
-              </h2>
-              {memberChartData.length > 0 && (
-                <span className="text-[11px] text-[#7B8494]">
-                  Largest: {memberChartData[0].name} (
-                  {formatInr(memberChartData[0].total)})
-                </span>
-              )}
-            </div>
-
-            <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4">
+          <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4">
+            {xirrTrends.some(
+              (pt) => pt.calculated_xirr !== null || pt.statement_xirr !== null,
+            ) ? (
               <div className="w-full h-[240px]">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={memberChartData}
-                    margin={{ top: 8, right: 16, left: 8, bottom: 4 }}
+                  <LineChart
+                    data={xirrTrends}
+                    margin={{ top: 8, right: 16, left: 0, bottom: 4 }}
                   >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="#E4E8EF"
-                      vertical={false}
-                    />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#E4E8EF" />
                     <XAxis
-                      dataKey="name"
+                      dataKey="period"
                       tick={{ fontSize: 12, fill: "#52627A" }}
                       axisLine={{ stroke: "#D4DCE8" }}
                       tickLine={{ stroke: "#D4DCE8" }}
                     />
                     <YAxis
-                      tickFormatter={(v) => formatInr(Number(v), 0)}
-                      tick={{ fontSize: 11, fill: "#52627A" }}
+                      tickFormatter={(v) => `${v}%`}
+                      tick={{ fontSize: 12, fill: "#52627A" }}
                       axisLine={{ stroke: "#D4DCE8" }}
                       tickLine={{ stroke: "#D4DCE8" }}
-                      width={86}
+                      width={56}
                     />
                     <Tooltip
                       contentStyle={{
@@ -549,30 +605,139 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
                         borderRadius: "8px",
                         fontSize: "12px",
                       }}
-                      formatter={(value) => [
-                        formatInr(Number(value ?? 0)),
-                        "Total Current Value",
-                      ]}
+                      formatter={(value) =>
+                        value === null || value === undefined
+                          ? ["—", ""]
+                          : [`${Number(value).toFixed(2)}%`]
+                      }
+                      labelFormatter={(label) => `FY ${label}`}
                     />
-                    <Bar
-                      dataKey="total"
-                      name="Total Current Value"
-                      radius={[6, 6, 0, 0]}
-                      maxBarSize={64}
-                    >
-                      {memberChartData.map((entry, index) => (
-                        <Cell
-                          key={entry.name}
-                          fill={index === 0 ? "#2653B5" : "#6E95E4"}
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
+                    <Legend wrapperStyle={{ fontSize: "12px" }} />
+                    <Line
+                      type="monotone"
+                      dataKey="calculated_xirr"
+                      name="Calculated XIRR (%)"
+                      stroke="#3B6FD8"
+                      strokeWidth={2.5}
+                      dot={{ r: 4, fill: "#3B6FD8" }}
+                      activeDot={{ r: 6 }}
+                      connectNulls={false}
+                    />
+                    {filters.scheme === null && (
+                      <Line
+                        type="monotone"
+                        dataKey="statement_xirr"
+                        name="Statement XIRR (%)"
+                        stroke="#0F766E"
+                        strokeWidth={2}
+                        strokeDasharray="5 5"
+                        dot={{ r: 4, fill: "#0F766E" }}
+                        activeDot={{ r: 6 }}
+                        connectNulls={false}
+                      />
+                    )}
+                  </LineChart>
                 </ResponsiveContainer>
               </div>
+            ) : (
+              <p className="text-xs text-[#657084]">
+                Import statements across multiple financial years or with
+                statement-reported XIRR to view XIRR trends over time.
+              </p>
+            )}
+          </div>
+
+          {memberXirrRows.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <h3 className="text-[14px] font-semibold text-[#52627A]">
+                  Member XIRR breakdown
+                </h3>
+                <span className="text-[11px] text-[#7B8494]">
+                  {filters.year !== null
+                    ? "Calculated XIRR uses all imported snapshots up to latest NAV"
+                    : "Granular return breakdown by family member and tier"}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto bg-white rounded-lg border border-[#E4E8EF]">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-[#E1E5ED] h-[42px] text-[#17243A] font-semibold">
+                      <th className="text-left px-3">Family member</th>
+                      <th className="text-left px-3">Tier</th>
+                      <th className="text-left px-3">Coverage period</th>
+                      <th className="text-right px-3">Current value</th>
+                      <th className="text-right px-3">Net invested</th>
+                      <th className="text-right px-3">Calculated XIRR</th>
+                      <th className="text-right px-3">Statement XIRR</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {memberXirrRows.map((item) => {
+                      const calcPct =
+                        item.calculatedXirr !== null
+                          ? item.calculatedXirr * 100
+                          : null;
+                      const repPct =
+                        item.statementXirr !== null
+                          ? item.statementXirr
+                          : null;
+                      let investedText = "—";
+                      if (item.netInvested !== null) {
+                        investedText = formatInr(item.netInvested);
+                        if (!item.investedComplete) {
+                          investedText = "~" + investedText;
+                        }
+                      }
+                      return (
+                        <tr
+                          key={item.key}
+                          className={`border-b border-[#F0F2F7] last:border-b-0 h-[40px] ${
+                            item.isSummary ? "bg-[#F8FAFD] font-semibold" : ""
+                          }`}
+                        >
+                          <td
+                            className="px-3 max-w-[240px] truncate"
+                            title={item.member}
+                          >
+                            {item.member}
+                          </td>
+                          <td className="px-3 whitespace-nowrap">
+                            {item.tierLabelText}
+                          </td>
+                          <td className="px-3 whitespace-nowrap text-[#52627A]">
+                            {item.period}
+                          </td>
+                          <td className="px-3 text-right whitespace-nowrap">
+                            {formatInr(item.currentValue)}
+                          </td>
+                          <td className="px-3 text-right whitespace-nowrap">
+                            {investedText}
+                          </td>
+                          <td
+                            className={`px-3 text-right whitespace-nowrap font-semibold ${
+                              calcPct === null
+                                ? "text-[#7B8494] font-normal"
+                                : calcPct >= 0
+                                  ? "text-[#0F766E]"
+                                  : "text-[#B91C1C]"
+                            }`}
+                          >
+                            {calcPct !== null ? `${calcPct.toFixed(2)}%` : "—"}
+                          </td>
+                          <td className="px-3 text-right whitespace-nowrap text-[#52627A]">
+                            {repPct !== null ? `${repPct.toFixed(2)}%` : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </section>
-        </div>
+          )}
+        </section>
       )}
 
       {rows.length === 0 ? (
@@ -583,60 +748,137 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         </p>
       ) : (
         <>
-          <h2 className="text-[17px] font-semibold text-[#17243A]">
-            Account balances
-          </h2>
-
-          <div className="overflow-x-auto bg-white rounded-lg border border-[#E4E8EF]">
-            <table className="w-full text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-[#E1E5ED] h-[42px] text-[#17243A] font-semibold">
-                  <th className="text-left px-3">Account</th>
-                  <th className="text-right px-3">Tier 1</th>
-                  <th className="text-right px-3">Tier 2</th>
-                  <th className="text-right px-3">Combined</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filters.member === null && (
-                  <tr className="border-b border-[#F0F2F7] h-[40px]">
-                    <td
-                      className="px-3 font-semibold max-w-[260px] truncate"
-                      title="Family"
-                    >
-                      Family
-                    </td>
-                    <td className="px-3 text-right">{formatInr(familyTier1)}</td>
-                    <td className="px-3 text-right">{formatInr(familyTier2)}</td>
-                    <td className="px-3 text-right">
-                      {formatInr(familyTier1 + familyTier2)}
-                    </td>
-                  </tr>
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+            <section className="flex flex-col gap-2">
+              <div className="flex items-baseline justify-between gap-2">
+                <h2 className="text-[17px] font-semibold text-[#17243A]">
+                  Portfolio by family member
+                </h2>
+                {memberChartData.length > 0 && (
+                  <span className="text-[11px] text-[#7B8494]">
+                    Largest: {memberChartData[0].name} (
+                    {formatInr(memberChartData[0].total)})
+                  </span>
                 )}
-                {summaryMembers.map((member) => (
-                  <tr
-                    key={member.name}
-                    className="border-b border-[#F0F2F7] last:border-b-0 h-[40px]"
-                  >
-                    <td
-                      className="px-3 max-w-[260px] truncate"
-                      title={member.name}
+              </div>
+
+              <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-4">
+                <div className="w-full h-[240px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={memberChartData}
+                      margin={{ top: 8, right: 16, left: 8, bottom: 4 }}
                     >
-                      {member.name}
-                    </td>
-                    <td className="px-3 text-right">
-                      {formatInr(member.nps_tier1)}
-                    </td>
-                    <td className="px-3 text-right">
-                      {formatInr(member.nps_tier2)}
-                    </td>
-                    <td className="px-3 text-right">
-                      {formatInr(member.nps_tier1 + member.nps_tier2)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        stroke="#E4E8EF"
+                        vertical={false}
+                      />
+                      <XAxis
+                        dataKey="name"
+                        tick={{ fontSize: 12, fill: "#52627A" }}
+                        axisLine={{ stroke: "#D4DCE8" }}
+                        tickLine={{ stroke: "#D4DCE8" }}
+                      />
+                      <YAxis
+                        tickFormatter={(v) => formatInr(Number(v), 0)}
+                        tick={{ fontSize: 11, fill: "#52627A" }}
+                        axisLine={{ stroke: "#D4DCE8" }}
+                        tickLine={{ stroke: "#D4DCE8" }}
+                        width={86}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "#FFFFFF",
+                          borderColor: "#E4E8EF",
+                          borderRadius: "8px",
+                          fontSize: "12px",
+                        }}
+                        formatter={(value) => [
+                          formatInr(Number(value ?? 0)),
+                          "Total Current Value",
+                        ]}
+                      />
+                      <Bar
+                        dataKey="total"
+                        name="Total Current Value"
+                        radius={[6, 6, 0, 0]}
+                        maxBarSize={64}
+                      >
+                        {memberChartData.map((entry, index) => (
+                          <Cell
+                            key={entry.name}
+                            fill={index === 0 ? "#2653B5" : "#6E95E4"}
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </section>
+
+            <section className="flex flex-col gap-2">
+              <h2 className="text-[17px] font-semibold text-[#17243A]">
+                Account balances
+              </h2>
+
+              <div className="overflow-x-auto bg-white rounded-lg border border-[#E4E8EF]">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-[#E1E5ED] h-[42px] text-[#17243A] font-semibold">
+                      <th className="text-left px-3">Account</th>
+                      <th className="text-right px-3">Tier 1</th>
+                      <th className="text-right px-3">Tier 2</th>
+                      <th className="text-right px-3">Combined</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filters.member === null && (
+                      <tr className="border-b border-[#F0F2F7] h-[40px]">
+                        <td
+                          className="px-3 font-semibold max-w-[260px] truncate"
+                          title="Family"
+                        >
+                          Family
+                        </td>
+                        <td className="px-3 text-right">
+                          {formatInr(familyTier1)}
+                        </td>
+                        <td className="px-3 text-right">
+                          {formatInr(familyTier2)}
+                        </td>
+                        <td className="px-3 text-right">
+                          {formatInr(familyTier1 + familyTier2)}
+                        </td>
+                      </tr>
+                    )}
+                    {summaryMembers.map((member) => (
+                      <tr
+                        key={member.name}
+                        className="border-b border-[#F0F2F7] last:border-b-0 h-[40px]"
+                      >
+                        <td
+                          className="px-3 max-w-[260px] truncate"
+                          title={member.name}
+                        >
+                          {member.name}
+                        </td>
+                        <td className="px-3 text-right">
+                          {formatInr(member.nps_tier1)}
+                        </td>
+                        <td className="px-3 text-right">
+                          {formatInr(member.nps_tier2)}
+                        </td>
+                        <td className="px-3 text-right">
+                          {formatInr(member.nps_tier1 + member.nps_tier2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           </div>
 
           {Array.from(rowsByMember.entries()).map(([memberId, memberRows]) => {

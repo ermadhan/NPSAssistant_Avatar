@@ -77,6 +77,7 @@ export function familyPortfolio(): {
   members: Array<{ member_id: string; name: string }>;
   reported_xirr: ReportedReturnRow[];
   calculated_xirr: CalculatedReturnRow[];
+  member_xirr: CalculatedReturnRow[];
 } {
   const years = db.listYears();
   const current = db.currentHoldingRows();
@@ -182,6 +183,46 @@ export function familyPortfolio(): {
     }
   }
 
+  const memberFlowsMap = new Map<
+    string,
+    {
+      member: string;
+      start_date: string;
+      end_date: string;
+      flows: Array<[string, number]>;
+    }
+  >();
+  for (const row of accountReturnsWithFlows) {
+    const existing = memberFlowsMap.get(row.member_id);
+    if (!existing) {
+      memberFlowsMap.set(row.member_id, {
+        member: row.member,
+        start_date: row.start_date ?? "",
+        end_date: row.end_date ?? "",
+        flows: [...row._cashflows],
+      });
+    } else {
+      if (row.start_date && (!existing.start_date || row.start_date < existing.start_date)) {
+        existing.start_date = row.start_date;
+      }
+      if (row.end_date && (!existing.end_date || row.end_date > existing.end_date)) {
+        existing.end_date = row.end_date;
+      }
+      existing.flows.push(...row._cashflows);
+    }
+  }
+
+  const memberReturns: CalculatedReturnRow[] = Array.from(
+    memberFlowsMap.entries(),
+  ).map(([member_id, entry]) => ({
+    member_id,
+    member: entry.member,
+    tier: null,
+    calculated_xirr: xirr(entry.flows),
+    start_date: entry.start_date,
+    end_date: entry.end_date,
+  }));
+
   const cleanAccountReturns: CalculatedReturnRow[] = accountReturnsWithFlows.map(
     ({ _cashflows, ...rest }) => rest,
   );
@@ -194,6 +235,7 @@ export function familyPortfolio(): {
     })),
     reported_xirr: reportedReturnsList,
     calculated_xirr: [...cleanAccountReturns, ...familyReturns],
+    member_xirr: memberReturns,
   };
 }
 

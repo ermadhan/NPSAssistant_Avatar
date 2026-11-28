@@ -31,6 +31,7 @@ const EMPTY_STATE: AppStatePayload = {
     members: [],
     reported_xirr: [],
     calculated_xirr: [],
+    member_xirr: [],
   },
   disclosures: [],
   catalog: [],

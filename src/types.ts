@@ -109,6 +109,7 @@ export interface AppStatePayload {
     members: Array<{ member_id: string; name: string }>;
     reported_xirr: ReportedReturnRow[];
     calculated_xirr: CalculatedReturnRow[];
+    member_xirr?: CalculatedReturnRow[];
   };
   disclosures: unknown[];
   catalog: FundNav[];
