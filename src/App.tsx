@@ -479,6 +479,9 @@ export default function App() {
                 onFilterChange={handleFilterChange}
                 onSaveNotes={handleSaveNotes}
                 onSaveThresholds={handleSaveThresholds}
+                onRefreshNavs={handleRefreshNavs}
+                onLinkSchemeCode={handleLinkSchemeCode}
+                busy={busy}
               />
             ) : activeView === "allocation" ? (
               <AllocationView
@@ -516,6 +519,8 @@ export default function App() {
                 }}
                 onBackToPortfolio={showHoldings}
                 onLinkSchemeCode={handleLinkSchemeCode}
+                onRefreshNavs={handleRefreshNavs}
+                busy={busy}
                 refreshTick={refreshTick}
               />
             )}

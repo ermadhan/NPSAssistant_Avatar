@@ -22,6 +22,8 @@ interface StatementsViewProps {
   onSelectImport: (importId: number | null) => void;
   onBackToPortfolio: () => void;
   onLinkSchemeCode: (statementName: string, schemeCode: string) => Promise<void>;
+  onRefreshNavs: () => Promise<void>;
+  busy: boolean;
   refreshTick: number;
 }
 
@@ -43,6 +45,8 @@ export const StatementsView: React.FC<StatementsViewProps> = ({
   onSelectImport,
   onBackToPortfolio,
   onLinkSchemeCode,
+  onRefreshNavs,
+  busy,
   refreshTick,
 }) => {
   const [detail, setDetail] = useState<{
@@ -325,10 +329,20 @@ export const StatementsView: React.FC<StatementsViewProps> = ({
       {pendingSchemeCodes.length > 0 && (
         <div className="flex flex-col gap-3">
           {catalog.length === 0 ? (
-            <p className="text-xs text-[#52627A]">
-              Refresh NAVs, then choose a scheme code for any name that did not
-              match.
-            </p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <p className="text-xs text-[#52627A]">
+                Refresh NAVs, then choose a scheme code for any name that did not
+                match.
+              </p>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onRefreshNavs()}
+                className="px-3.5 py-1.5 rounded-full border border-[#D4DCE8] bg-white text-xs font-medium text-[#17243A] hover:bg-[#F3F5F9] disabled:opacity-50 cursor-pointer"
+              >
+                Fetch NAV catalog
+              </button>
+            </div>
           ) : (
             <>
               <p className="text-sm font-semibold text-[#17243A]">

@@ -30,6 +30,7 @@ import type {
   XirrTrendPoint,
 } from "../types";
 import { FilterBar } from "./FilterBar";
+import { NavMappingPanel } from "./NavMappingPanel";
 
 const ASSET_CLASS_OPTIONS: AlertAssetClass[] = [
   "Equity",
@@ -53,6 +54,9 @@ interface OverviewViewProps {
   onSaveThresholds: (
     next: Omit<PortfolioThresholds, "updated_at">,
   ) => Promise<void>;
+  onRefreshNavs: () => Promise<void>;
+  onLinkSchemeCode: (statementName: string, schemeCode: string) => Promise<void>;
+  busy: boolean;
 }
 
 export const OverviewView: React.FC<OverviewViewProps> = ({
@@ -61,6 +65,9 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   onFilterChange,
   onSaveNotes,
   onSaveThresholds,
+  onRefreshNavs,
+  onLinkSchemeCode,
+  busy,
 }) => {
   const { years, holdingsByImport, analytics, notes, thresholds } = state;
   const [noteDraft, setNoteDraft] = useState(notes.content);
@@ -421,10 +428,6 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
     return result;
   })();
-
-  const missingNavSchemes = rows
-    .filter((r) => r.latest_nav === null)
-    .map((r) => r.scheme_name);
 
   const hasInvestedData =
     filters.year === null &&
@@ -1349,10 +1352,14 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             );
           })}
 
-          {missingNavSchemes.length > 0 && (
-            <p className="text-xs text-[#52627A]">
-              Latest NAV is not stored yet for: {missingNavSchemes.join("; ")}
-            </p>
+          {filters.year === null && (
+            <NavMappingPanel
+              holdings={rows}
+              catalog={state.catalog}
+              onRefreshNavs={onRefreshNavs}
+              onLinkSchemeCode={onLinkSchemeCode}
+              busy={busy}
+            />
           )}
         </>
       )}

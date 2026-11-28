@@ -67,10 +67,23 @@ export function matchScheme(statementName: string, funds: FundNav[]): SchemeMatc
       candidate[2] === wanted[2]
     );
   });
+
+  let unique: FundNav | null = matches.length === 1 ? matches[0] : null;
+  if (!unique && matches.length > 1) {
+    const targetNorm = statementName.replace(/\s+/g, " ").trim().toUpperCase();
+    const exact = matches.filter(
+      (fund) =>
+        fund.scheme_name.replace(/\s+/g, " ").trim().toUpperCase() === targetNorm,
+    );
+    if (exact.length === 1) {
+      unique = exact[0];
+    }
+  }
+
   return {
     statement_name: statementName,
     matches,
-    unique: matches.length === 1 ? matches[0] : null,
+    unique,
   };
 }
 
