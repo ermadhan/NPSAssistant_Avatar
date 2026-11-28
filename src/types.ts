@@ -93,6 +93,16 @@ export interface PortfolioNotes {
   updated_at: string | null;
 }
 
+export type AlertAssetClass = "Equity" | "Corporate" | "Government" | "Alternative";
+
+export interface PortfolioThresholds {
+  min_gain_inr: number | null;
+  target_asset_class: AlertAssetClass;
+  target_allocation_pct: number | null;
+  max_deviation_pct: number;
+  updated_at: string | null;
+}
+
 export interface XirrTrendPoint {
   period: string;
   as_of_date: string;
@@ -114,6 +124,7 @@ export interface AppStatePayload {
   disclosures: unknown[];
   catalog: FundNav[];
   notes: PortfolioNotes;
+  thresholds: PortfolioThresholds;
 }
 
 export interface AllocationBucketAmount {

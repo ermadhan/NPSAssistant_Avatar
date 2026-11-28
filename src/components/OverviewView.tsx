@@ -1,3 +1,4 @@
+import { AlertTriangle } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import {
   Bar,
@@ -20,19 +21,38 @@ import {
   tierLabel,
 } from "../lib/format";
 import type {
+  AlertAssetClass,
   AppStatePayload,
   EnrichedHoldingRow,
   FilterState,
   PortfolioPosition,
+  PortfolioThresholds,
   XirrTrendPoint,
 } from "../types";
 import { FilterBar } from "./FilterBar";
+
+const ASSET_CLASS_OPTIONS: AlertAssetClass[] = [
+  "Equity",
+  "Corporate",
+  "Government",
+  "Alternative",
+];
+
+const ASSET_CLASS_LABELS: Record<string, AlertAssetClass> = {
+  E: "Equity",
+  C: "Corporate",
+  G: "Government",
+  A: "Alternative",
+};
 
 interface OverviewViewProps {
   state: AppStatePayload;
   filters: FilterState;
   onFilterChange: (next: FilterState) => void;
   onSaveNotes: (content: string) => Promise<void>;
+  onSaveThresholds: (
+    next: Omit<PortfolioThresholds, "updated_at">,
+  ) => Promise<void>;
 }
 
 export const OverviewView: React.FC<OverviewViewProps> = ({
@@ -40,15 +60,45 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
   filters,
   onFilterChange,
   onSaveNotes,
+  onSaveThresholds,
 }) => {
-  const { years, holdingsByImport, analytics, notes } = state;
+  const { years, holdingsByImport, analytics, notes, thresholds } = state;
   const [noteDraft, setNoteDraft] = useState(notes.content);
   const [savingNotes, setSavingNotes] = useState(false);
   const [xirrTrends, setXirrTrends] = useState<XirrTrendPoint[]>([]);
 
+  const [minGainInput, setMinGainInput] = useState<string>(
+    thresholds.min_gain_inr !== null ? String(thresholds.min_gain_inr) : "",
+  );
+  const [targetAssetClass, setTargetAssetClass] = useState<AlertAssetClass>(
+    thresholds.target_asset_class,
+  );
+  const [targetPctInput, setTargetPctInput] = useState<string>(
+    thresholds.target_allocation_pct !== null
+      ? String(thresholds.target_allocation_pct)
+      : "",
+  );
+  const [maxDeviationInput, setMaxDeviationInput] = useState<string>(
+    String(thresholds.max_deviation_pct),
+  );
+  const [savingThresholds, setSavingThresholds] = useState(false);
+
   useEffect(() => {
     setNoteDraft(notes.content);
   }, [notes.content]);
+
+  useEffect(() => {
+    setMinGainInput(
+      thresholds.min_gain_inr !== null ? String(thresholds.min_gain_inr) : "",
+    );
+    setTargetAssetClass(thresholds.target_asset_class);
+    setTargetPctInput(
+      thresholds.target_allocation_pct !== null
+        ? String(thresholds.target_allocation_pct)
+        : "",
+    );
+    setMaxDeviationInput(String(thresholds.max_deviation_pct));
+  }, [thresholds]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -395,6 +445,118 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
       ? (absoluteGainLoss / totalInvestedAmount) * 100
       : null;
 
+  const parseOptionalNumber = (raw: string): number | null => {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+
+  const parsedMinGain = parseOptionalNumber(minGainInput);
+  const parsedTargetPctRaw = parseOptionalNumber(targetPctInput);
+  const parsedTargetPct =
+    parsedTargetPctRaw !== null &&
+    parsedTargetPctRaw >= 0 &&
+    parsedTargetPctRaw <= 100
+      ? parsedTargetPctRaw
+      : null;
+  const parsedMaxDeviationRaw = parseOptionalNumber(maxDeviationInput);
+  const parsedMaxDeviation =
+    parsedMaxDeviationRaw !== null &&
+    parsedMaxDeviationRaw >= 0 &&
+    parsedMaxDeviationRaw <= 100
+      ? parsedMaxDeviationRaw
+      : 10;
+
+  const targetAssetValue =
+    filters.year === null && scopedPositions.length > 0
+      ? scopedPositions
+          .filter((pos) => pos.asset_class === targetAssetClass)
+          .reduce((sum, pos) => sum + pos.current_value, 0)
+      : rows
+          .filter(
+            (row) => ASSET_CLASS_LABELS[row.asset_class] === targetAssetClass,
+          )
+          .reduce((sum, row) => sum + rowValue(row), 0);
+
+  const actualAllocationPct =
+    rows.length > 0 && totalCurrentValue > 0
+      ? (targetAssetValue / totalCurrentValue) * 100
+      : null;
+
+  const gainAlertTriggered =
+    rows.length > 0 &&
+    parsedMinGain !== null &&
+    absoluteGainLoss !== null &&
+    absoluteGainLoss < parsedMinGain;
+
+  const allocationDeviationPct =
+    rows.length > 0 && actualAllocationPct !== null && parsedTargetPct !== null
+      ? Math.abs(actualAllocationPct - parsedTargetPct)
+      : null;
+
+  const allocationAlertTriggered =
+    allocationDeviationPct !== null &&
+    allocationDeviationPct > parsedMaxDeviation;
+
+  const hasThresholdAlert = gainAlertTriggered || allocationAlertTriggered;
+
+  const alertMessages: string[] = [];
+  if (gainAlertTriggered && absoluteGainLoss !== null && parsedMinGain !== null) {
+    alertMessages.push(
+      `Total gain (${formatInr(absoluteGainLoss)}) is below minimum (${formatInr(parsedMinGain)}).`,
+    );
+  }
+  if (
+    allocationAlertTriggered &&
+    actualAllocationPct !== null &&
+    parsedTargetPct !== null
+  ) {
+    alertMessages.push(
+      `${targetAssetClass} allocation (${actualAllocationPct.toFixed(1)}%) deviates by ${allocationDeviationPct!.toFixed(1)} pp from ${parsedTargetPct.toFixed(1)}% ± ${parsedMaxDeviation.toFixed(1)}% target.`,
+    );
+  }
+
+  const thresholdsDirty =
+    parsedMinGain !== thresholds.min_gain_inr ||
+    targetAssetClass !== thresholds.target_asset_class ||
+    parsedTargetPct !== thresholds.target_allocation_pct ||
+    parsedMaxDeviation !== thresholds.max_deviation_pct;
+
+  const hasConfiguredThresholds =
+    parsedMinGain !== null || parsedTargetPct !== null;
+
+  const handleSaveThresholdsClick = async () => {
+    setSavingThresholds(true);
+    try {
+      await onSaveThresholds({
+        min_gain_inr: parsedMinGain,
+        target_asset_class: targetAssetClass,
+        target_allocation_pct: parsedTargetPct,
+        max_deviation_pct: parsedMaxDeviation,
+      });
+    } finally {
+      setSavingThresholds(false);
+    }
+  };
+
+  const handleClearThresholdsClick = async () => {
+    setMinGainInput("");
+    setTargetPctInput("");
+    setMaxDeviationInput("10");
+    setSavingThresholds(true);
+    try {
+      await onSaveThresholds({
+        min_gain_inr: null,
+        target_asset_class: targetAssetClass,
+        target_allocation_pct: null,
+        max_deviation_pct: 10,
+      });
+    } finally {
+      setSavingThresholds(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-[22px] font-semibold text-[#17243A]">Portfolio</h1>
@@ -406,12 +568,34 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
         onChange={onFilterChange}
       />
 
-      <div className="bg-white border border-[#E4E8EF] rounded-[14px] p-5 flex flex-col gap-3">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wide text-[#52627A]">
-            Portfolio summary
-          </span>
-          <span className="text-[11px] text-[#7B8494]">
+      <div
+        className={`rounded-[14px] p-5 flex flex-col gap-3 border transition-colors ${
+          hasThresholdAlert
+            ? "bg-[#FEF2F2] border-[#FCA5A5]"
+            : "bg-white border-[#E4E8EF]"
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span
+              className={`text-xs font-semibold uppercase tracking-wide ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#52627A]"
+              }`}
+            >
+              Portfolio summary
+            </span>
+            {hasThresholdAlert && (
+              <span className="inline-flex items-center gap-1 rounded-md bg-[#FEE2E2] border border-[#FECACA] px-2 py-0.5 text-[11px] font-semibold text-[#B91C1C]">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                Threshold alert
+              </span>
+            )}
+          </div>
+          <span
+            className={`text-[11px] ${
+              hasThresholdAlert ? "text-[#991B1B]" : "text-[#7B8494]"
+            }`}
+          >
             {filters.year !== null
               ? `FY ${filters.year} snapshot`
               : "Latest available valuation"}
@@ -420,13 +604,25 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
           <div className="flex flex-col gap-1">
-            <span className="text-[12px] text-[#657084]">
+            <span
+              className={`text-[12px] ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#657084]"
+              }`}
+            >
               Total Current Value
             </span>
-            <span className="text-[22px] font-semibold text-[#17243A]">
+            <span
+              className={`text-[22px] font-semibold ${
+                hasThresholdAlert ? "text-[#B91C1C]" : "text-[#17243A]"
+              }`}
+            >
               {rows.length > 0 ? formatInr(totalCurrentValue) : "—"}
             </span>
-            <span className="text-[11px] text-[#7B8494]">
+            <span
+              className={`text-[11px] ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#7B8494]"
+              }`}
+            >
               {rows.length > 0
                 ? filters.year !== null
                   ? "Statement valuation"
@@ -435,16 +631,32 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </span>
           </div>
 
-          <div className="flex flex-col gap-1 md:border-l md:border-[#E4E8EF] md:pl-4">
-            <span className="text-[12px] text-[#657084]">
+          <div
+            className={`flex flex-col gap-1 md:border-l md:pl-4 ${
+              hasThresholdAlert ? "md:border-[#FECACA]" : "md:border-[#E4E8EF]"
+            }`}
+          >
+            <span
+              className={`text-[12px] ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#657084]"
+              }`}
+            >
               Total Invested Amount
             </span>
-            <span className="text-[22px] font-semibold text-[#17243A]">
+            <span
+              className={`text-[22px] font-semibold ${
+                hasThresholdAlert ? "text-[#B91C1C]" : "text-[#17243A]"
+              }`}
+            >
               {totalInvestedAmount !== null
                 ? formatInr(totalInvestedAmount) + (incomplete ? " *" : "")
                 : "—"}
             </span>
-            <span className="text-[11px] text-[#7B8494]">
+            <span
+              className={`text-[11px] ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#7B8494]"
+              }`}
+            >
               {filters.year !== null
                 ? "Switch Financial year to Latest"
                 : totalInvestedAmount !== null
@@ -453,28 +665,160 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
             </span>
           </div>
 
-          <div className="flex flex-col gap-1 md:border-l md:border-[#E4E8EF] md:pl-4">
-            <span className="text-[12px] text-[#657084]">
+          <div
+            className={`flex flex-col gap-1 md:border-l md:pl-4 ${
+              hasThresholdAlert ? "md:border-[#FECACA]" : "md:border-[#E4E8EF]"
+            }`}
+          >
+            <span
+              className={`text-[12px] ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#657084]"
+              }`}
+            >
               Overall Absolute Gain/Loss
             </span>
             <span
               className={`text-[22px] font-semibold ${
-                absoluteGainLoss === null
-                  ? "text-[#17243A]"
-                  : absoluteGainLoss >= 0
-                    ? "text-[#0F766E]"
-                    : "text-[#B91C1C]"
+                hasThresholdAlert
+                  ? "text-[#B91C1C]"
+                  : absoluteGainLoss === null
+                    ? "text-[#17243A]"
+                    : absoluteGainLoss >= 0
+                      ? "text-[#0F766E]"
+                      : "text-[#B91C1C]"
               }`}
             >
               {absoluteGainLoss === null
                 ? "—"
                 : `${absoluteGainLoss >= 0 ? "+" : ""}${formatInr(absoluteGainLoss)}`}
             </span>
-            <span className="text-[11px] text-[#7B8494]">
+            <span
+              className={`text-[11px] ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#7B8494]"
+              }`}
+            >
               {gainLossPct !== null
                 ? `${gainLossPct >= 0 ? "+" : ""}${gainLossPct.toFixed(2)}% overall return`
                 : "Current value minus invested amount"}
             </span>
+          </div>
+        </div>
+
+        {hasThresholdAlert && (
+          <div className="rounded-lg bg-[#FEE2E2] border border-[#FECACA] px-3 py-2 flex flex-col gap-0.5 text-xs text-[#991B1B]">
+            {alertMessages.map((msg) => (
+              <div key={msg} className="font-medium">
+                {msg}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div
+          className={`pt-3 border-t flex flex-col gap-2 ${
+            hasThresholdAlert ? "border-[#FECACA]" : "border-[#E4E8EF]"
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <span
+              className={`text-[11px] font-semibold uppercase tracking-wide ${
+                hasThresholdAlert ? "text-[#991B1B]" : "text-[#52627A]"
+              }`}
+            >
+              Alert thresholds
+            </span>
+            {actualAllocationPct !== null && (
+              <span
+                className={`text-[11px] ${
+                  allocationAlertTriggered
+                    ? "text-[#B91C1C] font-semibold"
+                    : "text-[#657084]"
+                }`}
+              >
+                Current {targetAssetClass} share:{" "}
+                {actualAllocationPct.toFixed(1)}%
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 items-end">
+            <label className="flex flex-col gap-1 text-[11px] text-[#52627A]">
+              <span>Min gain (Rs)</span>
+              <input
+                type="number"
+                step="1000"
+                value={minGainInput}
+                onChange={(e) => setMinGainInput(e.target.value)}
+                placeholder="e.g. 50000"
+                className="h-8 rounded-lg border border-[#D4DCE8] bg-white px-2.5 text-xs text-[#17243A] placeholder:text-[#9AA3B2] focus:outline-none focus:border-[#3B6FD8]"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1 text-[11px] text-[#52627A]">
+              <span>Target asset class</span>
+              <select
+                value={targetAssetClass}
+                onChange={(e) =>
+                  setTargetAssetClass(e.target.value as AlertAssetClass)
+                }
+                className="h-8 rounded-lg border border-[#D4DCE8] bg-white px-2.5 text-xs text-[#17243A] focus:outline-none focus:border-[#3B6FD8]"
+              >
+                {ASSET_CLASS_OPTIONS.map((asset) => (
+                  <option key={asset} value={asset}>
+                    {asset}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-1 text-[11px] text-[#52627A]">
+              <span>Target share (%)</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step="1"
+                value={targetPctInput}
+                onChange={(e) => setTargetPctInput(e.target.value)}
+                placeholder="e.g. 50"
+                className="h-8 rounded-lg border border-[#D4DCE8] bg-white px-2.5 text-xs text-[#17243A] placeholder:text-[#9AA3B2] focus:outline-none focus:border-[#3B6FD8]"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1 text-[11px] text-[#52627A]">
+              <span>Allowed deviation (±%)</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step="1"
+                value={maxDeviationInput}
+                onChange={(e) => setMaxDeviationInput(e.target.value)}
+                placeholder="10"
+                className="h-8 rounded-lg border border-[#D4DCE8] bg-white px-2.5 text-xs text-[#17243A] placeholder:text-[#9AA3B2] focus:outline-none focus:border-[#3B6FD8]"
+              />
+            </label>
+
+            <div className="flex items-center gap-2 h-8">
+              <button
+                type="button"
+                disabled={!thresholdsDirty || savingThresholds}
+                onClick={handleSaveThresholdsClick}
+                className="px-3.5 h-8 rounded-full bg-[#3B6FD8] text-white text-xs font-medium hover:bg-[#315EC0] disabled:opacity-50 cursor-pointer disabled:cursor-default"
+              >
+                {savingThresholds ? "Saving..." : "Save"}
+              </button>
+              {hasConfiguredThresholds && (
+                <button
+                  type="button"
+                  disabled={savingThresholds}
+                  onClick={handleClearThresholdsClick}
+                  className="px-3 h-8 rounded-full border border-[#D4DCE8] bg-white text-xs font-medium text-[#52627A] hover:bg-[#F3F5F9] cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>

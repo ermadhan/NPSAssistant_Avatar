@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createViteServer } from "vite";
 import { allocationSummary, familyPortfolio, xirrTrends } from "./server/analytics.ts";
-import { db, type EnrichedHoldingRow } from "./server/db.ts";
+import { db, type AlertAssetClass, type EnrichedHoldingRow } from "./server/db.ts";
 import {
   buildSecurityExposure,
   fetchLatestHdfcDisclosure,
@@ -77,6 +77,7 @@ async function startServer() {
     const disclosures = db.latestSecurityDisclosures();
     const catalog = Array.from(db.navQuotes.values());
     const notes = db.getNotes();
+    const thresholds = db.getThresholds();
 
     res.json({
       years,
@@ -86,6 +87,7 @@ async function startServer() {
       disclosures,
       catalog,
       notes,
+      thresholds,
     });
   });
 
@@ -100,6 +102,82 @@ async function startServer() {
       return;
     }
     const saved = db.saveNotes(content);
+    res.json(saved);
+  });
+
+  app.get("/api/thresholds", (_req, res) => {
+    res.json(db.getThresholds());
+  });
+
+  app.put("/api/thresholds", (req, res) => {
+    const {
+      min_gain_inr,
+      target_asset_class,
+      target_allocation_pct,
+      max_deviation_pct,
+    } = req.body as {
+      min_gain_inr?: unknown;
+      target_asset_class?: unknown;
+      target_allocation_pct?: unknown;
+      max_deviation_pct?: unknown;
+    };
+
+    const validAssets: AlertAssetClass[] = [
+      "Equity",
+      "Corporate",
+      "Government",
+      "Alternative",
+    ];
+    if (
+      typeof target_asset_class !== "string" ||
+      !validAssets.includes(target_asset_class as AlertAssetClass)
+    ) {
+      res.status(400).json({ error: "Invalid target_asset_class." });
+      return;
+    }
+    if (
+      min_gain_inr !== null &&
+      min_gain_inr !== undefined &&
+      (typeof min_gain_inr !== "number" || !Number.isFinite(min_gain_inr))
+    ) {
+      res.status(400).json({ error: "min_gain_inr must be a number or null." });
+      return;
+    }
+    if (
+      target_allocation_pct !== null &&
+      target_allocation_pct !== undefined &&
+      (typeof target_allocation_pct !== "number" ||
+        !Number.isFinite(target_allocation_pct) ||
+        target_allocation_pct < 0 ||
+        target_allocation_pct > 100)
+    ) {
+      res.status(400).json({
+        error: "target_allocation_pct must be between 0 and 100 or null.",
+      });
+      return;
+    }
+    if (
+      typeof max_deviation_pct !== "number" ||
+      !Number.isFinite(max_deviation_pct) ||
+      max_deviation_pct < 0 ||
+      max_deviation_pct > 100
+    ) {
+      res.status(400).json({
+        error: "max_deviation_pct must be a number between 0 and 100.",
+      });
+      return;
+    }
+
+    const saved = db.saveThresholds({
+      min_gain_inr:
+        min_gain_inr === undefined || min_gain_inr === null ? null : min_gain_inr,
+      target_asset_class: target_asset_class as AlertAssetClass,
+      target_allocation_pct:
+        target_allocation_pct === undefined || target_allocation_pct === null
+          ? null
+          : target_allocation_pct,
+      max_deviation_pct,
+    });
     res.json(saved);
   });
 

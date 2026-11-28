@@ -20,6 +20,7 @@ import type {
   AppStatePayload,
   FilterState,
   ParseResult,
+  PortfolioThresholds,
 } from "./types";
 
 const EMPTY_STATE: AppStatePayload = {
@@ -36,6 +37,13 @@ const EMPTY_STATE: AppStatePayload = {
   disclosures: [],
   catalog: [],
   notes: { content: "", updated_at: null },
+  thresholds: {
+    min_gain_inr: null,
+    target_asset_class: "Equity",
+    target_allocation_pct: null,
+    max_deviation_pct: 10,
+    updated_at: null,
+  },
 };
 
 export default function App() {
@@ -305,6 +313,28 @@ export default function App() {
     }
   };
 
+  const handleSaveThresholds = async (
+    next: Omit<PortfolioThresholds, "updated_at">,
+  ) => {
+    try {
+      const res = await fetch("/api/thresholds", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(next),
+      });
+      const payload = await res.json();
+      if (!res.ok) {
+        throw new Error(payload.error || "Could not save thresholds.");
+      }
+      setState((prev) => ({ ...prev, thresholds: payload }));
+      setStatus("Saved alert thresholds.");
+    } catch (err) {
+      setStatus(
+        `Could not save thresholds: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
   const triggerDownload = (kind: "holdings" | "transactions") => {
     setMenuOpen(false);
     const params = new URLSearchParams({ format: "xlsx" });
@@ -448,6 +478,7 @@ export default function App() {
                 filters={filters}
                 onFilterChange={handleFilterChange}
                 onSaveNotes={handleSaveNotes}
+                onSaveThresholds={handleSaveThresholds}
               />
             ) : activeView === "allocation" ? (
               <AllocationView

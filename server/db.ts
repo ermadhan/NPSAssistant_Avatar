@@ -142,6 +142,24 @@ export interface EnrichedSecurityRow extends StoredSecurityPosition {
   fetched_at: string;
 }
 
+export type AlertAssetClass = "Equity" | "Corporate" | "Government" | "Alternative";
+
+export interface PortfolioThresholds {
+  min_gain_inr: number | null;
+  target_asset_class: AlertAssetClass;
+  target_allocation_pct: number | null;
+  max_deviation_pct: number;
+  updated_at: string | null;
+}
+
+const DEFAULT_THRESHOLDS: PortfolioThresholds = {
+  min_gain_inr: null,
+  target_asset_class: "Equity",
+  target_allocation_pct: null,
+  max_deviation_pct: 10,
+  updated_at: null,
+};
+
 function memberIdFor(pran: string, subscriberName: string): string {
   return pran && pran.trim() !== "" ? pran : subscriberName;
 }
@@ -173,6 +191,7 @@ class InMemoryPortfolioDb {
     content: "",
     updated_at: null,
   };
+  public thresholds: PortfolioThresholds = { ...DEFAULT_THRESHOLDS };
   public readonly dataFilePath: string;
 
   constructor(dataFilePath: string = resolveDataFilePath()) {
@@ -204,6 +223,7 @@ class InMemoryPortfolioDb {
         securityDisclosures: DisclosureRecord[];
         securityPositions: StoredSecurityPosition[];
         notes: { content: string; updated_at: string | null };
+        thresholds: PortfolioThresholds;
       }>;
       this.nextImportId = parsed.nextImportId ?? 1;
       this.nextHoldingId = parsed.nextHoldingId ?? 1;
@@ -223,6 +243,9 @@ class InMemoryPortfolioDb {
       this.securityDisclosures = parsed.securityDisclosures ?? [];
       this.securityPositions = parsed.securityPositions ?? [];
       this.notes = parsed.notes ?? { content: "", updated_at: null };
+      this.thresholds = parsed.thresholds
+        ? { ...DEFAULT_THRESHOLDS, ...parsed.thresholds }
+        : { ...DEFAULT_THRESHOLDS };
     } catch (err) {
       console.warn("Could not load local portfolio data:", err);
     }
@@ -251,6 +274,7 @@ class InMemoryPortfolioDb {
         securityDisclosures: this.securityDisclosures,
         securityPositions: this.securityPositions,
         notes: this.notes,
+        thresholds: this.thresholds,
       };
       const tmpPath = `${this.dataFilePath}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(payload), "utf-8");
@@ -672,6 +696,24 @@ class InMemoryPortfolioDb {
     };
     this.persist();
     return this.notes;
+  }
+
+  getThresholds(): PortfolioThresholds {
+    return this.thresholds;
+  }
+
+  saveThresholds(
+    next: Omit<PortfolioThresholds, "updated_at">,
+  ): PortfolioThresholds {
+    this.thresholds = {
+      min_gain_inr: next.min_gain_inr,
+      target_asset_class: next.target_asset_class,
+      target_allocation_pct: next.target_allocation_pct,
+      max_deviation_pct: next.max_deviation_pct,
+      updated_at: isoSecondsNow(),
+    };
+    this.persist();
+    return this.thresholds;
   }
 }
 
